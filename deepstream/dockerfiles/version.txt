@@ -1,0 +1,3 @@
+v1: deepstream7.0 + TAO converter + NGC client
+
+v2: deepstream7.0 + FaceDetectIR package, models. (tutorial on catalog nvidia)	# NOT COMPLETE YET.

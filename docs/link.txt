@@ -1,0 +1,28 @@
+Yahboom jetson orin nano super sub documentations: https://www.yahboom.net/study/Orin-Nano-SUPER
+
+Nvidia Jetson Orin Nano - SSD & MicroSD Setup Guide: https://www.youtube.com/watch?v=BaRdpSXU6EM
+
+Tutorial on Docker/Image, jetson-container: https://youtu.be/HlH3QkS1F5Y?si=vIr26j_PednZnnwh
+
+
+Jetson computer vision: https://youtube.com/playlist?list=PLWw98q-Xe7iH2zy8f7qZrmGhnheJtfXZB&si=PAXY0dPW7nM4Lz8t
+
+
+Deploy Computer Visoin models on Orin nano: https://blog.roboflow.com/how-to-deploy-to-jetson-orin-nano-computer-vision/
+
+
+Object detection on jetson nano: https://www.instructables.com/Build-a-Face-Recognition-Machine-With-Jetson-Nano
+
+
+
+gaze estimation demo: https://docs.openvino.ai/2023.3/omz_models_model_gaze_estimation_adas_0002.html?utm_source=chatgpt.com
+
+
+docker container deepstream: https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_docker_containers.html?utm_source=chatgpt.com
+
+
+face landmark estimation: https://docs.nvidia.com/tao/archive/5.3.0/text/model_zoo/cv_models/fpenet.html?utm_source=chatgpt.com
+
+
+
+

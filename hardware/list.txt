@@ -1,0 +1,9 @@
+Hardware Used by the Project:
+
+Development board: Nvidia Jetson Orin Nano
+	> 8GB ram
+	> 1TB SDD (Samsung 990 Evo Plus)
+
+Camera: Arducam Day and Night Vision IMX477 12.3MP HQ Camera Jetson nano/Xavier NX.
+
+

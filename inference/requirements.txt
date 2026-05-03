@@ -1,0 +1,9 @@
+# Jetson inference dependencies
+# NOTE: do NOT pip install opencv — use system opencv with GStreamer support:
+#   sudo apt install python3-opencv
+#   ln -s /usr/lib/python3/dist-packages/cv2.cpython-310-aarch64-linux-gnu.so \
+#         $CONDA_PREFIX/lib/python3.10/site-packages/cv2.so
+
+mediapipe==0.10.18
+pyyaml
+numpy

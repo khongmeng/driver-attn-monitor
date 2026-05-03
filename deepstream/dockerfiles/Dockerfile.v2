@@ -1,0 +1,55 @@
+# Use the official DeepStream L4T base image (for Jetson)
+FROM nvcr.io/nvidia/deepstream-l4t:7.0-triton-multiarch
+
+# Environment setup
+# ENV DEBIAN_FRONTEND=noninteractive
+ENV MODEL_DIR=/opt/nvidia/deepstream/deepstream/samples/models/facedetectir
+ENV CONFIG_DIR=/opt/nvidia/deepstream/deepstream/samples/configs/tao_pretrained_models
+ENV WORK_DIR=/workspace
+
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    git wget zip nano && \
+    rm -rf /var/lib/apt/lists/*
+
+
+# Install NGC CLI (ARM64 version 4.5.2)
+RUN wget --content-disposition \
+    https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.5.2/files/ngccli_arm64.zip \
+    -O ngccli_arm64.zip && \
+    unzip ngccli_arm64.zip && \
+    rm ngccli_arm64.zip && \
+    chmod u+x ngc-cli/ngc && \
+    mv ngc-cli /usr/local/bin/ && \
+    ln -s /usr/local/bin/ngc-cli/ngc /usr/local/bin/ngc
+
+
+
+# Clone reference DeepStream app configs (TAO models)
+WORKDIR /opt/nvidia/deepstream/deepstream
+RUN git clone https://github.com/NVIDIA-AI-IOT/deepstream_reference_apps.git && \
+    cp -r sources/apps/sample_apps/deepstream_reference_apps/deepstream_app_tao_configs/* \
+    samples/configs/tao_pretrained_models/ && \
+    rm -rf sources/apps/sample_apps/deepstream_reference_apps
+
+# Create model folder and download FaceDetectIR files
+RUN mkdir -p ${MODEL_DIR} && \
+    wget https://api.ngc.nvidia.com/v2/models/nvidia/tao/facedetectir/versions/pruned_v1.0/files/resnet18_facedetectir_pruned.etlt \
+    -O ${MODEL_DIR}/resnet18_facedetectir_pruned.etlt && \
+    wget https://api.ngc.nvidia.com/v2/models/nvidia/tao/facedetectir/versions/pruned_v1.0/files/facedetectir_int8.txt \
+    -O ${MODEL_DIR}/facedetectir_int8.txt
+
+# Update config paths for FaceDetectIR
+RUN sed -i "s|tlt-encoded-model=.*|tlt-encoded-model=${MODEL_DIR}/resnet18_facedetectir_pruned.etlt|" ${CONFIG_DIR}/config_infer_primary_faceirnet.txt && \
+    sed -i "s|labelfile-path=.*|labelfile-path=${CONFIG_DIR}/labels_faceirnet.txt|" ${CONFIG_DIR}/config_infer_primary_faceirnet.txt && \
+    sed -i "s|int8-calib-file=.*|int8-calib-file=${MODEL_DIR}/facedetectir_int8.txt|" ${CONFIG_DIR}/config_infer_primary_faceirnet.txt && \
+    sed -i "s|tlt-model-key=.*|tlt-model-key=tlt_encode|" ${CONFIG_DIR}/config_infer_primary_faceirnet.txt
+
+# Default working directory
+WORKDIR ${CONFIG_DIR}
+
+# Display helper message when container starts
+CMD echo "✅ FaceDetectIR DeepStream container ready!" && \
+    echo "To run inference: deepstream-app -c deepstream_app_source1_faceirnet.txt" && \
+    bash

@@ -1,0 +1,9 @@
+# PC training dependencies (Windows or Linux, RTX 4070 Ti Super)
+torch>=2.0
+torchvision
+ultralytics          # YOLOv8 — train + export to ONNX
+albumentations       # data augmentation
+opencv-python
+pyyaml
+tqdm
+matplotlib

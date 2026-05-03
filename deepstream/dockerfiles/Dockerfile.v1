@@ -1,0 +1,27 @@
+# Start from DeepStream 7.0 Triton container
+FROM nvcr.io/nvidia/deepstream-l4t:7.0-triton-multiarch
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    wget curl python3-pip unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install NGC CLI (ARM64 version 4.5.2)
+RUN wget --content-disposition \
+    https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.5.2/files/ngccli_arm64.zip \
+    -O ngccli_arm64.zip && \
+    unzip ngccli_arm64.zip && \
+    rm ngccli_arm64.zip && \
+    chmod u+x ngc-cli/ngc && \
+    mv ngc-cli /usr/local/bin/ && \
+    ln -s /usr/local/bin/ngc-cli/ngc /usr/local/bin/ngc
+
+# Install TAO Toolkit Converter for Jetson (JetPack 6.0, ARM64)
+RUN ngc registry resource download-version nvidia/tao/tao-converter:v5.1.0_jp6.0_aarch64 && \
+    cd /opt/nvidia/deepstream/deepstream-7.0/tao-converter_vv5.1.0_jp6.0_aarch64 && \
+    chmod +x tao-converter && \
+    mv tao-converter /usr/local/bin/ && \
+    cd / && rm -rf /opt/nvidia/deepstream/deepstream-7.0/tao-converter_vv5.1.0_jp6.0_aarch64
+
+# Set default workdir
+WORKDIR /workspace

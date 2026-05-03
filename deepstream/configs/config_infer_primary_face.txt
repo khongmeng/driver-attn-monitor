@@ -1,0 +1,21 @@
+[property]
+gpu-id=0
+net-scale-factor=1.0
+model-engine-file=/workspace/models/face_detection/facenet_pruned_quantized_v2.0.1/facenet_fp16.engine
+labelfile-path=/workspace/models/face_detection/facenet_pruned_quantized_v2.0.1/labels.txt
+network-type=1    # 1 = detector
+num-detected-classes=1
+gie-unique-id=1
+infer-dims=3;416;416
+maintain-aspect-ratio=1
+process-mode=1    # primary detector
+network-mode=2    # fp16
+
+[class-attrs-all]
+pre-cluster-threshold=0.2
+
+parse-bbox-func-name=NvDsInferParseCustomFacenet
+custom-lib-path=/opt/nvidia/deepstream/deepstream/lib/libnvds_infercustomparser.so
+
+
+
