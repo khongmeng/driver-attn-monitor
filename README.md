@@ -6,43 +6,92 @@ Research project — University of St. Thomas.
 Conducted by Khongmeng Kormoua, supervised by Dr. Cheol-Hong Min.
 
 ## Detected states
-- **FOCUSED** — driver looking at road, eyes open
-- **DROWSY** — PERCLOS ≥ 20% (eyes closed > 20% of last 60 s)
-- **DISTRACTED** — head yaw > 30° or pitch > 20°
-- **NO_FACE** — driver not detected
 
-## Running on Jetson
+| State | Condition |
+|---|---|
+| **FOCUSED** | Eyes open, head facing road |
+| **DROWSY** | PERCLOS ≥ 20% (eyes closed > 20% of last 60 s) |
+| **DISTRACTED** | Head yaw > 30° or pitch > 20° |
+| **TIRED** | Early fatigue (yawning, low vigilance) |
+| **NO_FACE** | Driver not detected |
+
+## Project layout
+
+```
+inference/      Jetson runtime (camera + face analysis + state + overlay)
+train/          PC training scripts (RTX 4070 Ti Super)
+models/         Local model weights (gitignored — download or export separately)
+deepstream/     DeepStream configs + TAO models (future TensorRT pipeline)
+assets/         Test videos and sample images
+docs/           Dev log and reference links
+hardware/       Hardware notes and setup photos
+archive/        Old exploration scripts (v1–v8) — kept for reference
+```
+
+---
+
+## Inference setup (Jetson Orin Nano Super)
+
+**Prerequisites:** JetPack 6, miniforge3, system OpenCV with GStreamer support.
+
+### 1. Create the conda environment
 
 ```bash
-# From project root
+source ~/miniforge3/bin/activate
+conda env create -f inference/environment.yml
+conda activate dms-infer
+```
+
+### 2. Link system OpenCV into the conda env
+
+OpenCV must come from the system (built with GStreamer + Argus support) — do not pip-install it.
+
+```bash
+SITE=$(python -c "import site; print(site.getpackages()[0])")
+ln -s /usr/lib/python3/dist-packages/cv2 $SITE/cv2
+```
+
+### 3. Run inference
+
+```bash
+conda activate dms-infer
 python run_inference.py
 
 # Quit: press Esc
 ```
 
-## Project layout
+> See `docs/log.txt` for full setup history and troubleshooting.
 
-```
-inference/      Clean Jetson runtime (camera + face analysis + state + overlay)
-train/          PC training scaffold (RTX 4070 Ti Super)
-models/         Local model weights (gitignored — generate or download)
-deepstream/     DeepStream configs + TAO models (future TensorRT pipeline)
-assets/         Test videos and sample images
-docs/           Dev log, reference links, LaTeX manual
-hardware/       Hardware notes and setup photos
-archive/        Old exploration scripts (v1–v8) — kept for reference
-```
+---
 
-## Environment setup (Jetson, conda `mp` env)
+## Training setup (Windows PC, RTX 4070 Ti Super)
+
+**Prerequisites:** miniforge3 or Anaconda, NVIDIA driver ≥ 591.86.
+
+### 1. Create the conda environment
 
 ```bash
-source ~/miniforge3/bin/activate
-conda activate mp
-python run_inference.py
+conda env create -f train/environment.yml
+conda activate dms-train
 ```
 
-See `docs/log.txt` for full setup history and troubleshooting.
+### 2. Verify GPU is available
+
+```bash
+python -c "import torch; print(torch.cuda.get_device_name(0))"
+```
+
+---
 
 ## Config
 
-All tunable parameters are in `config.yaml` — no need to edit source files.
+All tunable parameters live in `config.yaml` — no need to edit source files.
+
+| Section | Key parameters |
+|---|---|
+| `camera` | sensor_id, resolution (1280×720), framerate (30), flip_method |
+| `face_mesh` | max_faces, refine_landmarks |
+| `ear` | threshold (0.21), consecutive_frames (3) |
+| `head_pose` | yaw_threshold (30°), pitch_threshold (20°) |
+| `state` | perclos_window_sec (60), drowsy_perclos (0.20) |
+| `display` | window_title, show_fps |

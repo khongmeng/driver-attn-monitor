@@ -1,0 +1,18 @@
+name: dms-infer
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10                     # matches JetPack 6 default
+  - numpy
+  - pyyaml
+  - pip
+  - pip:
+    - mediapipe==0.10.18
+    # opencv is intentionally excluded — use the system OpenCV built with
+    # GStreamer support. After creating this env, run:
+    #
+    #   SITE=$(python -c "import site; print(site.getpackages()[0])")
+    #   ln -s /usr/lib/python3/dist-packages/cv2 $SITE/cv2
+    #
+    # See docs/log.txt for full setup history.

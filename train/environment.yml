@@ -1,0 +1,28 @@
+name: dms-train
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch::pytorch=2.7
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - pytorch::pytorch-cuda=12.8      # driver 591.86 (CUDA 13.1) is forward-compatible
+  - numpy
+  - pyyaml
+  - tqdm
+  - matplotlib
+  - scikit-learn
+  - jupyter
+  - ipykernel
+  - tensorboard
+  - pip
+  - pip:
+    - ultralytics          # YOLOv8 / YOLO11
+    - albumentations       # augmentation
+    - opencv-python        # PC training only — NOT for Jetson
+    - onnx                 # model export
+    - onnxruntime          # validate ONNX exports on PC (CPU)
+    - sixdrepnet           # 6DRepNet head pose model
