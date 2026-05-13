@@ -8,6 +8,7 @@ class DriverState(Enum):
     FOCUSED    = "FOCUSED"
     DROWSY     = "DROWSY"
     DISTRACTED = "DISTRACTED"
+    TIRED      = "TIRED"      # planned: yawn / low-vigilance — not yet wired up
     NO_FACE    = "NO_FACE"
 
 

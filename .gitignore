@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE / tooling
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model weights — keep models/ structure but ignore binaries
+models/**/*.onnx
+models/**/*.engine
+models/**/*.trt
+models/**/*.pt
+models/**/*.pth
+models/**/*.caffemodel
+models/**/*.etlt
+models/**/*.uff
+models/**/*.bin
+
+# DeepStream artifacts
+*.engine
+*.cache
+
+# Datasets / large media
+datasets/
+*.zip
+*.tar.gz
+
+# Logs
+*.log
+runs/
+wandb/
+
+# Recorded data collection sessions
+recordings/

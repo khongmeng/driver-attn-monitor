@@ -7,6 +7,7 @@ _STATE_COLOR = {
     DriverState.FOCUSED:    (0, 200, 0),
     DriverState.DROWSY:     (0, 60, 255),
     DriverState.DISTRACTED: (0, 165, 255),
+    DriverState.TIRED:      (0, 215, 255),
     DriverState.NO_FACE:    (120, 120, 120),
 }
 

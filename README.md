@@ -95,3 +95,5 @@ All tunable parameters live in `config.yaml` — no need to edit source files.
 | `head_pose` | yaw_threshold (30°), pitch_threshold (20°) |
 | `state` | perclos_window_sec (60), drowsy_perclos (0.20) |
 | `display` | window_title, show_fps |
+
+> Note: `TIRED` is reserved in the state enum but detection (yawning / low vigilance) is not yet implemented. The current pipeline labels FOCUSED / DROWSY / DISTRACTED / NO_FACE.

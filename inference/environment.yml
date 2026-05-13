@@ -6,6 +6,7 @@ dependencies:
   - python=3.10                     # matches JetPack 6 default
   - numpy
   - pyyaml
+  - pillow                          # used by tools/record.py for the Tk preview
   - pip
   - pip:
     - mediapipe==0.10.18

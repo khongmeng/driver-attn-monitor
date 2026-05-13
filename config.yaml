@@ -17,17 +17,9 @@ head_pose:
   yaw_threshold: 30      # degrees left/right before "distracted"
   pitch_threshold: 20    # degrees up/down before "distracted"
 
-gaze:
-  score_threshold: 0.3   # normalized iris offset (future use)
-
 state:
   perclos_window_sec: 60   # rolling window for PERCLOS calculation
   drowsy_perclos: 0.20     # PERCLOS >= 20% triggers drowsy alert
-
-age_gender:
-  enabled: true
-  interval_frames: 15
-  model_dir: models/age_gender
 
 display:
   window_title: "DMS - Driver Monitoring System"

@@ -5,16 +5,16 @@ University of St. Thomas research project — Khongmeng Kormoua, supervised by D
 
 ## Project goal
 
-Detect 4 driver states in real time from a single cabin camera:
+Detect 4 driver states in real time from a single cabin camera, plus a no-driver fallback:
 - **FOCUSED** — looking at road, eyes open
 - **DISTRACTED** — head yaw > 30° or pitch > 20°
 - **DROWSY** — PERCLOS ≥ 20% over last 60s
-- **TIRED** — early fatigue (yawning, low vigilance)
-- **NO_FACE** — driver not detected
+- **TIRED** — early fatigue (yawning, low vigilance) — *enum reserved, detection not yet wired up*
+- **NO_FACE** — driver not detected (fallback, not a driver state)
 
 **Approach:** Transfer learning — compose pretrained models for face detection, head pose, and eye state; fine-tune for the 4-class output. Avoid training from scratch.
 
-All suggestions should be Jetson-compatible (ONNX Runtime TRT EP or TensorRT), and respect the 4-state taxonomy.
+All suggestions should be Jetson-compatible (ONNX Runtime TRT EP or TensorRT), and respect the 4-state taxonomy (+ NO_FACE).
 
 ## Inference pipeline architecture
 
@@ -22,7 +22,9 @@ All suggestions should be Jetson-compatible (ONNX Runtime TRT EP or TensorRT), a
 Camera → [Face Detection] → [Head Pose + Eye State] → [State Classifier] → Alert/Overlay
 ```
 
-Existing Python inference code lives in `inference/`. DeepStream pipeline is planned for a future hardened production build.
+**Current state:** `inference/` runs a MediaPipe FaceMesh prototype on Jetson — single model gives landmarks, EAR comes from eye landmarks, head pose from `cv2.solvePnP` on 6 face points. This is the cross-platform development baseline, not the production target.
+
+**Planned:** swap FaceMesh for the ONNX/TRT cascade below (SCRFD → 6DRepNet → open-closed-eye-0001 → MobileNetV3 classifier). DeepStream pipeline is a later hardened production build.
 
 ## Recommended models
 
@@ -85,17 +87,25 @@ Existing Python inference code lives in `inference/`. DeepStream pipeline is pla
 
 ```
 inference/      Jetson runtime (camera + face analysis + state + overlay)
+tools/          Operator-facing utilities (data-collection recorder, etc.)
 train/          PC training scaffold (RTX 4070 Ti Super)
 models/         Local model weights (gitignored)
+recordings/     Captured session videos (gitignored)
 deepstream/     DeepStream configs + TAO models (future TensorRT pipeline)
 assets/         Test videos and sample images
-docs/           Dev log, reference links
+docs/           Dev log, reference links, recording guide
 hardware/       Hardware notes and setup photos
 archive/        Old exploration scripts (v1–v8)
 ```
 
+## Data collection
+
+Driver-attention data is captured in the lab by pairing the Jetson rig with a PC running **Assetto Corsa** as the driving simulator. The Jetson records the driver-facing IMX477 feed; the PC runs the sim in parallel on its own display. See `docs/recording_guide.md` for the operator runbook and `tools/record.py` for the recorder app.
+
 ## Environment
 
-- Jetson: conda env `mp` (`source ~/miniforge3/bin/activate && conda activate mp`)
-- All tunable parameters in `config.yaml` — no need to edit source files
-- See `docs/log.txt` for setup history and troubleshooting
+- Jetson inference: conda env `dms-infer` (`inference/environment.yml`). System OpenCV is symlinked in — do not pip-install opencv. See README.
+- PC training: conda env `dms-train` (`train/environment.yml`).
+- Legacy `mp` env from early MediaPipe experiments still appears in `docs/log.txt`; superseded by `dms-infer`.
+- All tunable parameters in `config.yaml` — no need to edit source files.
+- See `docs/log.txt` for setup history and troubleshooting.
