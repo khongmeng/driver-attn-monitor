@@ -45,4 +45,4 @@ runs/
 wandb/
 
 # Recorded data collection sessions
-recordings/
+# recordings/ # for now i will push some recording data
