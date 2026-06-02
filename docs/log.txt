@@ -518,4 +518,68 @@ CMD ["bash"]
         > python3 -c "import mediapipe as mp; print(mp.__version__)"   (now it should shows 0.10.18)
 
 
-  > now mp environment should be ready to run gaze_v5_camera.py succesfully  
+  > now mp environment should be ready to run gaze_v5_camera.py succesfully
+
+
+6/1/2026:
+
+
+- ran the recorder app (tools/record.py) for the first time end-to-end via tools/start_recording.sh.
+  > launcher script was not executable (rw-rw-r--). made it executable: chmod +x tools/start_recording.sh
+  > launcher tries dms-infer env first then falls back to mp. dms-infer doesn't exist on this jetson yet, mp is being used.
+
+
+- first attempt to start the recorder failed: "Failed to create CaptureSession" from gst-nvarguscamerasrc.
+  > issue: nvargus-daemon got into a stuck state from a previous run. journal showed "NvPclInitializeDrivers: error: Failed to init camera sub module v4l2_sensor" and "NvPclStateControllerOpen: Failed ImagerGUID 0".
+  > solution: it cleared on its own after a moment. if it ever sticks again: sudo systemctl restart nvargus-daemon. a plain gst-launch-1.0 nvarguscamerasrc ! ... ! fakesink is a good quick probe to confirm the camera is healthy.
+
+
+- recorded a clip with the app but the playback was ~2x sped up.
+  > issue: tools/record.py was using cv2.VideoWriter(..., fourcc="mp4v", fps=cfg.framerate=30). the gui tick loop does cam.read + writer.write + PIL+Tk preview render every frame, which on orin nano caps the loop at ~15 fps. file was tagged 30fps so playback runs ~2x.
+  > confirmed with cv2.CAP_PROP_FRAME_COUNT / CAP_PROP_FPS vs file mtime - filename minus warmup: 1499 frames tagged 30fps gave "49.97s" but real wall-clock was ~100s.
+
+
+- tried switching to a GStreamer pipeline writer with nvv4l2h264enc (hardware encode).
+  > issue: nvv4l2h264enc does not exist on jetson orin nano. the silicon block (NVENC) is not present — this is a hard platform constraint. /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstnvvideo4linux2.so is installed but only exposes nvv4l2decoder.
+  > verify with: gst-inspect-1.0 /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstnvvideo4linux2.so
+  > solution: use x264enc (software). orin nano has 6x A78AE cores, x264enc speed-preset=superfast tune=zerolatency threads=4 sustains realtime at 720p.
+
+
+- writer.write() failed with "Error pushing buffer to GStreamer pipeline" / not-negotiated.
+  > issue: i had put video/x-raw,format=BGR,width=W,height=H,framerate=N/D right after appsrc. cv2.VideoWriter with CAP_GSTREAMER silently overrides the appsrc framerate caps with its own integer fraction computed from the fps argument. when my caps filter declared a different framerate, downstream pre_eventfunc_check refused the caps mismatch.
+  > GST_DEBUG=2 showed: "caps video/x-raw, format=(string)BGR, ... framerate=(fraction)3014/95 not accepted" at capsfilter3:sink.
+  > solution: do not declare framerate in any caps filter between appsrc and videoconvert. let opencv's framerate flow through.
+
+
+- writer worked but file played back ~6% fast even with the GStreamer pipeline.
+  > issue: my fps warmup was a blocking loop in _start_recording (cam.read + probe.write only, no GUI render). measured ~31 fps. but during real recording the gui tick loop also has PIL+Tk render, dropping actual to ~18 fps. declared > actual = sped up.
+  > solution: moved the warmup INTO _tick so it runs through the same code path as real recording (camera read + encode probe + PIL+Tk render). warmup state is now (probe_writer + counter + start_time). when 1.5s of frames have accumulated, probe is released, fps is computed, real writer opens. measured fps now matches actual recording fps.
+  > pipeline used: appsrc is-live=true format=time ! queue ! videoconvert ! video/x-raw,format=I420 ! x264enc speed-preset=superfast tune=zerolatency threads=4 key-int-max=2*fps bitrate=8000 ! h264parse ! mp4mux faststart=true ! filesink location=...
+
+
+- side note: appsrc do-timestamp=true is ALSO a no-op with opencv's cv2.VideoWriter for the same reason — opencv pre-stamps each buffer's PTS from the declared fps before pushing to appsrc, so the running-time stamp from do-timestamp never gets applied. tested by declaring fps=120 but pushing at 20 fps over 2s — file duration was 0.33s (40/120) not 2s.
+
+
+- added a desktop launcher icon for the recorder.
+  > created ~/Desktop/DMS-Recorder.desktop, marked executable (chmod +x), and trusted with: gio set ~/Desktop/DMS-Recorder.desktop metadata::trusted true
+  > Exec=/home/orinnano/driver-attn-monitor/tools/start_recording.sh, Terminal=true so the launcher script output stays visible.
+  > on first launch GNOME may still pop "Untrusted Application Launcher" — right-click → Allow Launching.
+
+
+- added "Open Recordings Folder" button to the gui. uses subprocess.Popen(["xdg-open", recordings_dir]).
+
+
+- tried to ship a portable in-repo .desktop launcher (DMS-Recorder.desktop at repo root, Exec= using %k self-reference, mode 100755 committed via git, gio metadata::trusted=true set).
+  > issue: GNOME Files (Nautilus 42.6 on this Jetson) opens it as plain text on double-click. trust flag + executable bit are not enough. Nautilus 42 only launches .desktop files from trusted dirs (~/Desktop, ~/.local/share/applications/, /usr/share/applications). This is a security hardening, not a config issue.
+  > solution: dropped the in-repo .desktop, replaced with Start-Recorder.sh (executable shell script at repo root). User right-clicks → "Run as a Program" — works on Nautilus 42+ without trust setup. For one-click access from anywhere, ./tools/install_launcher.sh creates a proper launcher in ~/Desktop (where Nautilus does honor it) and marks it gio-trusted.
+
+
+- ended up with three ways to launch the recorder:
+  > terminal: ./Start-Recorder.sh  (or ./tools/start_recording.sh)
+  > Files in the repo: right-click Start-Recorder.sh → Run as a Program
+  > one-time setup: ./tools/install_launcher.sh, then double-click the Desktop icon
+
+
+- camera preview feels a bit delayed in the gui (not actively fixing, noting for later).
+  > causes: nvarguscamerasrc ISP latency ~30-40ms baked in. appsink in inference/camera.py has no max-buffers=1 drop=true, so frames pile up when the gui tick can't keep up. PIL+Tk render adds ~30-50ms per frame.
+  > planned fix: add "appsink max-buffers=1 drop=true sync=false" to inference/camera.py pipeline. cuts visible lag roughly in half.

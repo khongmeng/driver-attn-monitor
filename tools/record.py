@@ -9,6 +9,7 @@ Controls: Start/Stop button on the right panel. Window close (X) or Quit
 button exits cleanly.
 """
 
+import subprocess
 import sys
 import time
 import tkinter as tk
@@ -46,6 +47,14 @@ class RecorderApp:
         self.rec_start = 0.0
         self.frame_size = None
         self._photo = None  # keep a reference so Tk doesn't GC the image
+
+        # Warmup state: a probe writer (encoder → fakesink) is fed from inside
+        # _tick for ~1.5 s before the real writer opens, so the measured fps
+        # includes preview-render overhead.
+        self._probe = None
+        self._warm_start = 0.0
+        self._warm_count = 0
+        self.WARM_SECONDS = 1.5
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
@@ -89,8 +98,11 @@ class RecorderApp:
                                   command=self.toggle_record)
         self.rec_btn.grid(row=8, column=0, sticky="ew", pady=4)
 
+        ttk.Button(side, text="Open Recordings Folder",
+                   command=self.open_recordings).grid(row=9, column=0, sticky="ew", pady=4)
+
         ttk.Button(side, text="Quit",
-                   command=self.quit).grid(row=9, column=0, sticky="ew", pady=4)
+                   command=self.quit).grid(row=10, column=0, sticky="ew", pady=4)
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -104,14 +116,21 @@ class RecorderApp:
 
         self.frame_size = frame.shape[:2]  # (h, w)
 
-        if self.writer is not None:
+        if self._probe is not None:
+            # Warmup pass: push to throwaway encoder so measured fps reflects
+            # full per-frame cost (capture + encode + preview render).
+            self._probe.write(frame)
+            self._warm_count += 1
+            if time.time() - self._warm_start >= self.WARM_SECONDS:
+                self._finish_warmup()
+        elif self.writer is not None:
             self.writer.write(frame)
             elapsed = int(time.time() - self.rec_start)
             mm, ss = divmod(elapsed, 60)
             self.elapsed_var.set(f"{mm:02d}:{ss:02d}")
 
         display = frame
-        if self.writer is not None:
+        if self.writer is not None or self._probe is not None:
             display = frame.copy()
             cv2.circle(display, (28, 32), 12, (0, 0, 255), -1)
 
@@ -121,7 +140,9 @@ class RecorderApp:
         self._photo = ImageTk.PhotoImage(image=img)
         self.preview.configure(image=self._photo)
 
-        if self.writer is not None:
+        if self._probe is not None:
+            self.status_lbl.configure(foreground="#cc8800")
+        elif self.writer is not None:
             self.status_var.set("● REC")
             self.status_lbl.configure(foreground="#cc0000")
         else:
@@ -131,30 +152,70 @@ class RecorderApp:
         self.root.after(1, self._tick)
 
     def toggle_record(self):
-        if self.writer is None:
-            self._start_recording()
-        else:
+        if self.writer is None and self._probe is None:
+            self._start_warmup()
+        elif self.writer is not None:
             self._stop_recording()
 
-    def _start_recording(self):
+    def _start_warmup(self):
         if self.frame_size is None:
             return  # camera hasn't produced a frame yet
+        h, w = self.frame_size
+        probe_pipeline = (
+            "appsrc is-live=true format=time ! queue ! "
+            "videoconvert ! video/x-raw,format=I420 ! "
+            "x264enc speed-preset=superfast tune=zerolatency threads=4 ! "
+            "fakesink sync=false"
+        )
+        probe = cv2.VideoWriter(probe_pipeline, cv2.CAP_GSTREAMER, 0, 30.0, (w, h))
+        if not probe.isOpened():
+            self.path_var.set("ERROR: warmup probe failed to open")
+            return
+        self._probe = probe
+        self._warm_count = 0
+        self._warm_start = time.time()
+        self.status_var.set("MEASURING FPS…")
+        self.rec_btn.configure(text="Stop Recording")
+        print("[REC] warmup begin")
+
+    def _finish_warmup(self):
+        elapsed = time.time() - self._warm_start
+        self._probe.release()
+        self._probe = None
+        measured_fps = max(1.0, self._warm_count / elapsed)
+        print(f"[REC] warmup {self._warm_count} frames / {elapsed:.2f}s → {measured_fps:.2f} fps")
+        self._open_writer(measured_fps)
+
+    def _open_writer(self, measured_fps: float):
+        h, w = self.frame_size
         out_dir = REPO_ROOT / "recordings"
         out_dir.mkdir(exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = out_dir / f"rec_{ts}.mp4"
-        h, w = self.frame_size
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(path), fourcc, self.cfg["framerate"], (w, h))
+
+        # Orin Nano has no HW video encoder — x264enc (software, threaded) is
+        # the best available. superfast+zerolatency keeps it realtime at 720p.
+        # No caps filter between appsrc and videoconvert: OpenCV's VideoWriter
+        # sets its own framerate fraction on appsrc, and a hard caps filter
+        # here triggers a not-negotiated error if our number doesn't match.
+        pipeline = (
+            f"appsrc is-live=true format=time ! queue ! "
+            f"videoconvert ! video/x-raw,format=I420 ! "
+            f"x264enc speed-preset=superfast tune=zerolatency threads=4 "
+            f"key-int-max={int(measured_fps * 2)} bitrate=8000 ! "
+            f"h264parse ! mp4mux faststart=true ! "
+            f"filesink location={path}"
+        )
+        writer = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, measured_fps, (w, h))
         if not writer.isOpened():
             self.path_var.set(f"ERROR: could not open writer\n{path}")
+            self.rec_btn.configure(text="Start Recording")
             return
         self.writer = writer
         self.rec_path = path
         self.rec_start = time.time()
         self.path_var.set(path.name)
-        self.rec_btn.configure(text="Stop Recording")
-        print(f"[REC] start -> {path}")
+        print(f"[REC] start -> {path} @ {measured_fps:.2f} fps")
 
     def _stop_recording(self):
         if self.writer is None:
@@ -169,7 +230,15 @@ class RecorderApp:
         self.rec_btn.configure(text="Start Recording")
         print(f"[REC] stop  -> {saved}")
 
+    def open_recordings(self):
+        out_dir = REPO_ROOT / "recordings"
+        out_dir.mkdir(exist_ok=True)
+        subprocess.Popen(["xdg-open", str(out_dir)])
+
     def quit(self):
+        if self._probe is not None:
+            self._probe.release()
+            self._probe = None
         if self.writer is not None:
             self._stop_recording()
         self.cam.release()

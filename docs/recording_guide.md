@@ -21,14 +21,16 @@ Both machines run in parallel during a session. Items marked _(TODO: …)_ are p
 ## 1. Power up the Jetson and start the recorder
 
 1. Power on the Jetson. Wait for the desktop.
-2. Open a terminal.
-3. Launch the recorder:
-   ```bash
-   cd ~/Meng/driver-attn-monitor       # or wherever the repo lives on this Jetson
-   ./tools/start_recording.sh
-   ```
-   This activates the `dms-infer` conda env and opens the **DMS Recorder** window — live camera preview on the left, status panel + buttons on the right.
-4. The right panel shows `Status: IDLE`. **Don't click Start yet** — wait until the simulator is ready.
+2. Launch the recorder — pick whichever is convenient:
+   - **Desktop icon**: double-click the **DMS Recorder** icon (created by `./tools/install_launcher.sh` if not already there).
+   - **From the repo folder in Files**: right-click `Start-Recorder.sh` → **Run as a Program**.
+   - **From a terminal**:
+     ```bash
+     cd ~/Meng/driver-attn-monitor    # or wherever the repo lives on this Jetson
+     ./Start-Recorder.sh              # or ./tools/start_recording.sh
+     ```
+   Any path activates the `dms-infer` conda env (falls back to legacy `mp`) and opens the **DMS Recorder** window — live camera preview on the left, status panel + buttons on the right.
+3. The right panel shows `Status: IDLE`. **Don't click Start yet** — wait until the simulator is ready.
 
 If the preview is black or the script errors out:
 - Re-run the camera-sensor selection step (`sudo /opt/nvidia/jetson-io/jetson-io.py` → IMX477) and reboot. This setting sometimes resets after L4T updates — see `docs/log.txt`.
@@ -55,7 +57,7 @@ If the preview is black or the script errors out:
 ## 3. Start the recording
 
 1. Driver gets into position at the wheel.
-2. On the Jetson recorder window, click **Start Recording**. The status flips to `● REC` in red, the elapsed counter starts, a red dot appears on the preview, and the terminal prints `[REC] start -> recordings/rec_<timestamp>.mp4`.
+2. On the Jetson recorder window, click **Start Recording**. The status flips to `MEASURING FPS…` for ~1.5 s while the recorder samples real capture cadence, then to `● REC` in red. The elapsed counter starts, a red dot appears on the preview, and the terminal prints `[REC] start -> recordings/rec_<timestamp>.mp4 @ <fps> fps`.
 3. On the PC, unpause Assetto Corsa and start driving.
 
 Treat the recording as running from the Start click onwards; what happens on the PC is whatever the session plan calls for.
@@ -97,5 +99,6 @@ The MP4 is saved at:
 ## Notes
 
 - The recorder is a Tkinter app. Tkinter ships with Python, but `tools/record.py` also uses **Pillow** to bridge the OpenCV frame into the Tk preview — make sure `pillow` is in your `dms-infer` env (it is in `inference/environment.yml`). If the app crashes with `ModuleNotFoundError: PIL`, run `pip install pillow` inside the env.
-- The recorder uses `cv2.VideoWriter` with the `mp4v` codec, encoded on the Jetson CPU. At 1280×720 / 30 fps this should hold realtime on Orin Nano. If you see dropped frames, the next step is a GStreamer sink with `nvv4l2h264enc` (hardware encoder).
+- The recorder writes MP4 via a GStreamer pipeline: `appsrc → x264enc (superfast, zerolatency, 4 threads, 8 Mbps) → mp4mux → filesink`. Hardware H.264 encoding is **not available** on Orin Nano (NVENC absent on this SKU), so software x264enc is the best practical option. `nvv4l2h264enc` does not exist on this hardware — see `docs/log.txt` 6/1/2026 entry for the investigation.
+- Clicking Start runs a ~1.5 s warmup that pushes frames through a throwaway encoder while the GUI is rendering, so the measured fps reflects real capture cadence (encode + preview overhead included). The writer is then opened at that measured fps, so playback runs at real time even though the loop runs below 30 fps.
 - All camera parameters (resolution, framerate, sensor id, flip) come from `config.yaml` — edit there, not in `tools/record.py`.

@@ -34,6 +34,7 @@ models/**/*.bin
 *.cache
 
 # Datasets / large media
+recordings/
 datasets/
 *.zip
 *.tar.gz

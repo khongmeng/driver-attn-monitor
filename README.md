@@ -60,6 +60,28 @@ python run_inference.py
 # Quit: press Esc
 ```
 
+### 4. (Optional) Launch the data-collection recorder
+
+Three ways to open the app, pick whichever fits:
+
+**A. From the repo folder** — in GNOME Files (Nautilus), right-click
+   `Start-Recorder.sh` → **Run as a Program**. (GNOME 42+ blocks
+   double-clicking executable scripts by default; the right-click menu
+   bypasses that.)
+
+**B. Put an icon on the Desktop** for one-click access from anywhere:
+   ```bash
+   ./tools/install_launcher.sh
+   ```
+   Double-click the new **DMS Recorder** icon on your Desktop.
+
+**C. From a terminal**:
+   ```bash
+   ./Start-Recorder.sh        # or ./tools/start_recording.sh
+   ```
+
+See `docs/recording_guide.md` for the session runbook.
+
 > See `docs/log.txt` for full setup history and troubleshooting.
 
 ---
