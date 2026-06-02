@@ -12,9 +12,20 @@ _STATE_COLOR = {
 }
 
 
-def draw(frame: np.ndarray, features: list, result: StateResult, fps: float) -> np.ndarray:
+def draw(frame: np.ndarray, features: list, result: StateResult, fps: float,
+         objects: list = None) -> np.ndarray:
     color = _STATE_COLOR[result.state]
     w     = frame.shape[1]
+
+    for o in (objects or []):
+        ocolor = (0, 0, 255) if o.is_distraction else (180, 130, 0)
+        x0, y0, x1, y1 = o.bbox
+        cv2.rectangle(frame, (x0, y0), (x1, y1), ocolor, 2)
+        tag = f"{o.label} {o.score:.0%}"
+        cv2.putText(frame, tag, (x0, max(12, y0 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
+        cv2.putText(frame, tag, (x0, max(12, y0 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, ocolor, 1)
 
     for f in features:
         x0, y0, x1, y1 = f.bbox

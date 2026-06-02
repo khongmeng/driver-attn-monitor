@@ -86,6 +86,60 @@ See `docs/recording_guide.md` for the session runbook.
 
 ---
 
+## Record a clip and run inference on it
+
+End-to-end workflow: capture a driver-facing clip, then run the analysis stack
+(gaze, head pose, blink rate, and phone/object detection) on the saved file and
+review an annotated video.
+
+### 1. Record a clip
+
+Launch the recorder (see options A–C above), capture your session, and stop.
+Clips are saved to `recordings/`.
+
+```bash
+./Start-Recorder.sh
+# ...record, then stop. Output lands in recordings/<name>.mp4
+```
+
+### 2. Download the object-detection model (one time only)
+
+The phone/object detector uses EfficientDet-Lite (80 COCO classes). The weights
+are gitignored, so fetch them once into `models/`:
+
+```bash
+mkdir -p models
+curl -sL -o models/efficientdet_lite0.tflite \
+  https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite
+```
+
+### 3. Run inference on the saved video
+
+```bash
+conda activate dms-infer
+python -m inference.run_video recordings/<name>.mp4
+```
+
+This writes an annotated copy to `recordings/<name>_annotated.mp4` and prints a
+summary (face-detection coverage, blink count, phone-visible %, yaw/pitch range,
+state breakdown).
+
+**Options:**
+
+| Flag | Effect |
+|---|---|
+| `--show` | Also open a live preview window while processing |
+| `--no-save` | Skip the output file, just print the summary |
+| *(camera index)* | Pass `0` instead of a path to run on the live camera: `python -m inference.run_video 0 --show` |
+
+> Run it as a module (`python -m inference.run_video`), not `python inference/run_video.py` — the package uses relative imports.
+>
+> Expect ~6–7 fps on the Orin Nano CPU (MediaPipe FaceMesh + EfficientDet). This
+> offline pass is for reviewing a recorded view; real-time live capture needs the
+> ONNX/TRT cascade (see `CLAUDE.md`).
+
+---
+
 ## Training setup (Windows PC, RTX 4070 Ti Super)
 
 **Prerequisites:** miniforge3 or Anaconda, NVIDIA driver ≥ 591.86.
@@ -116,6 +170,7 @@ All tunable parameters live in `config.yaml` — no need to edit source files.
 | `ear` | threshold (0.21), consecutive_frames (3) |
 | `head_pose` | yaw_threshold (30°), pitch_threshold (20°) |
 | `state` | perclos_window_sec (60), drowsy_perclos (0.20) |
+| `object_detector` | model_path, score_threshold (0.35), max_results (5) |
 | `display` | window_title, show_fps |
 
 > Note: `TIRED` is reserved in the state enum but detection (yawning / low vigilance) is not yet implemented. The current pipeline labels FOCUSED / DROWSY / DISTRACTED / NO_FACE.

@@ -21,6 +21,11 @@ state:
   perclos_window_sec: 60   # rolling window for PERCLOS calculation
   drowsy_perclos: 0.20     # PERCLOS >= 20% triggers drowsy alert
 
+object_detector:
+  model_path: models/efficientdet_lite0.tflite  # EfficientDet-Lite, 80 COCO classes
+  score_threshold: 0.35
+  max_results: 5
+
 display:
   window_title: "DMS - Driver Monitoring System"
   show_fps: true

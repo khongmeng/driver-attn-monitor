@@ -34,15 +34,21 @@ class StateDetector:
 
         self._closed_frames = 0
         self._blink_count   = 0
-        self._start_time    = time.time()
+        self._start_time    = None   # set on first update (wall-clock or video clock)
         self._eye_log: deque = deque()   # (timestamp, eye_closed)
 
-    def update(self, features: list) -> StateResult:
+    def update(self, features: list, now: float = None) -> StateResult:
+        # `now` lets video-file playback drive metrics off the video clock
+        # instead of wall-clock time; live capture leaves it None.
+        if now is None:
+            now = time.time()
+        if self._start_time is None:
+            self._start_time = now
+
         if not features:
             return StateResult(state=DriverState.NO_FACE)
 
-        f   = features[0]
-        now = time.time()
+        f = features[0]
 
         # Blink detection
         eye_closed = f.ear < self._ear_thresh
