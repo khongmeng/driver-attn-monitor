@@ -6,6 +6,7 @@ Usage:
   python -m inference.run_video recordings/clip.mp4            # annotate + save
   python -m inference.run_video recordings/clip.mp4 --show     # also live window
   python -m inference.run_video 0 --show                       # live camera (index)
+  python -m inference.run_video /dev/video1 --show             # USB webcam (e.g. C922)
 
 Output is written next to the input as <name>_annotated.mp4 unless --out is given.
 """
@@ -28,6 +29,30 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _usb_mjpeg_pipeline(device, width=640, height=480, framerate=30):
+    """GStreamer pipeline for a USB (UVC) webcam via its MJPEG stream.
+
+    Plain cv2.VideoCapture('/dev/videoN') defaults to YUYV on Jetson, which
+    returns garbled first frames; pulling MJPEG and decoding with jpegdec is
+    reliable. Keeps Cheese's broken libjpeg path out of the loop entirely.
+    """
+    return (
+        f"v4l2src device={device} ! "
+        f"image/jpeg, width={width}, height={height}, framerate={framerate}/1 ! "
+        f"jpegdec ! videoconvert ! video/x-raw, format=BGR ! "
+        f"appsink drop=1 max-buffers=2"
+    )
+
+
+def open_source(source):
+    """Open a video file, integer camera index, or /dev/videoN USB webcam."""
+    if source.startswith('/dev/video'):
+        return cv2.VideoCapture(_usb_mjpeg_pipeline(source), cv2.CAP_GSTREAMER), True
+    is_camera = source.isdigit()
+    cap = cv2.VideoCapture(int(source) if is_camera else source)
+    return cap, is_camera
+
+
 def main():
     ap = argparse.ArgumentParser(description="Run DMS analysis on a video file or camera.")
     ap.add_argument('source', help="video file path, or integer camera index")
@@ -38,8 +63,7 @@ def main():
 
     cfg = load_config()
 
-    is_camera = args.source.isdigit()
-    cap = cv2.VideoCapture(int(args.source) if is_camera else args.source)
+    cap, is_camera = open_source(args.source)
     if not cap.isOpened():
         raise SystemExit(f"Could not open source: {args.source}")
 
@@ -100,8 +124,13 @@ def main():
             if writer:
                 writer.write(frame)
             if args.show:
-                cv2.imshow(cfg['display']['window_title'], frame)
-                if cv2.waitKey(1) & 0xFF == 27:   # Esc
+                title = cfg['display']['window_title']
+                cv2.imshow(title, frame)
+                key = cv2.waitKey(1) & 0xFF
+                # Quit on Esc/q, or when the window is closed via its X button
+                # (otherwise OpenCV just re-creates the window on the next frame).
+                if key in (27, ord('q')) or \
+                        cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1:
                     break
 
             frame_idx += 1
