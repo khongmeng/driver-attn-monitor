@@ -26,6 +26,35 @@ Camera → [Face Detection] → [Head Pose + Eye State] → [State Classifier] �
 
 **Planned:** swap FaceMesh for the ONNX/TRT cascade below (SCRFD → 6DRepNet → open-closed-eye-0001 → MobileNetV3 classifier). DeepStream pipeline is a later hardened production build.
 
+## Target production setup (the setup that actually works)
+
+The FaceMesh prototype is fragile because **every signal is a geometric heuristic on landmarks, not a model**: EAR (from eye landmarks) decides DROWSY, `solvePnP` decides DISTRACTED, iris-offset draws the gaze arrow. There is *no* learned gaze, eye-state, or drowsiness model. These heuristics break on camera angle/lighting — confirmed in [[camera_view_findings]]. The production target replaces each heuristic with a model trained on in-cabin data, and adds two things that matter more than model choice:
+
+**Core principle:** replace geometric heuristics with models → fix camera geometry → fine-tune on in-cabin data → run on TensorRT FP16.
+
+| Stage | Model | Replaces (current heuristic) | Feeds state |
+|---|---|---|---|
+| ① Face detect | SCRFD-500M | FaceMesh detect | crop + NO_FACE gate |
+| ② Head pose | 6DRepNet | `cv2.solvePnP` (yaw is broken, spans ±180°) | DISTRACTED |
+| ③ Eye state | open-closed-eye-0001 | EAR threshold (causes ~89% false DROWSY) | PERCLOS → DROWSY; blink/yawn → TIRED |
+| ④ State | MobileNetV3-Small (rules first, learned later) | the `if` ladder in `state_detector.py` | all 4 states |
+
+**Two non-model root causes (higher leverage than swapping models):**
+1. **Camera geometry** — mount near-frontal, ~eye level (steering column / A-pillar), NOT looking down from the headliner; add IR illuminator + IR-pass for night/glare invariance. A bad angle re-introduces every failure even with perfect models.
+2. **Domain fine-tuning** — fine-tune ③ on MRL Eye (IR crops), validate ④ on DMD + NTHU-DDD, split DROWSY↔TIRED with UTA-RLDD, and calibrate thresholds (PERCLOS, yaw/pitch) on clips from *our own rig*, not paper defaults. See [[ref_datasets]].
+
+**Temporal layer (don't skip):** PERCLOS over 60s rolling window fed by the eye-state *model* (not EAR), state hysteresis/smoothing to stop flicker, blink-rate + yawn detection to finally wire up the reserved TIRED state.
+
+**Build order (leverage-ranked, don't need all of it to get unstuck):**
+1. Fix the mount (near-frontal + IR) — free, root cause of worst numbers.
+2. Swap in ③ open-closed-eye-0001 → kills false DROWSY (biggest single win).
+3. Swap in ② 6DRepNet → fixes yaw, makes DISTRACTED real.
+4. Swap in ① SCRFD → solid crops + NO_FACE.
+5. ④ state: rules on the now-reliable signals first; upgrade to fine-tuned MobileNetV3 once rig clips are labeled.
+6. Gaze (L2CS-Net / gaze-estimation-adas-0002) is **optional** — not in the 4-state taxonomy, defer it.
+
+**Modular cascade vs. single end-to-end model:** start modular (above) — debuggable, fixable one stage at a time, matches the transfer-learning approach. A single end-to-end temporal net (e.g. trained on DMD video) can be more accurate but is a black box needing far more labeled data.
+
 ## Recommended models
 
 ### Stage 1 — Face Detection

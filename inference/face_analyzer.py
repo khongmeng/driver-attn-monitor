@@ -35,12 +35,17 @@ class FaceFeatures:
 
 
 class FaceAnalyzer:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, gaze_cfg: dict = None):
         self._mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=cfg.get('max_faces', 1),
             refine_landmarks=cfg.get('refine_landmarks', True),
         )
+        gaze_cfg          = gaze_cfg or {}
+        self._gaze_gain   = gaze_cfg.get('arrow_gain', 220.0)
+        self._gaze_dead   = gaze_cfg.get('deadzone', 0.04)
+        self._gaze_alpha  = gaze_cfg.get('smoothing', 0.35)
+        self._gaze_ema    = None   # EMA of normalized gaze vector (single-face cabin cam)
 
     def process(self, frame_bgr: np.ndarray) -> list:
         h, w = frame_bgr.shape[:2]
@@ -87,15 +92,34 @@ class FaceAnalyzer:
         left_iris  = np.mean([px(i) for i in range(468, 473)], axis=0)
         right_iris = np.mean([px(i) for i in range(473, 478)], axis=0)
 
-        l_outer = np.array(px(33))
-        l_inner = np.array(px(133))
-        l_mid   = (l_outer + l_inner) / 2.0
-        gv      = left_iris - l_mid
-        norm    = np.linalg.norm(gv) + 1e-6
-        gaze_offset = norm / (np.linalg.norm(l_outer - l_inner) + 1e-6)
-        unit    = gv / norm
-        gaze_end = (int(left_iris[0] + unit[0] * 50),
-                    int(left_iris[1] + unit[1] * 50))
+        # Per-eye iris offset from the eye-corner midpoint, normalized by eye
+        # width so it is resolution- and head-distance-independent. Averaging
+        # both eyes halves the per-frame landmark noise.  (#1 proportional, #4 both eyes)
+        def eye_offset(iris, outer_id, inner_id):
+            outer = np.array(px(outer_id))
+            inner = np.array(px(inner_id))
+            width = np.linalg.norm(outer - inner) + 1e-6
+            return (iris - (outer + inner) / 2.0) / width
+
+        gv = (eye_offset(left_iris, 33, 133) +
+              eye_offset(right_iris, 263, 362)) / 2.0
+
+        # Temporal smoothing: EMA of the normalized gaze vector.  (#3)
+        if self._gaze_ema is None:
+            self._gaze_ema = gv
+        else:
+            self._gaze_ema = (self._gaze_alpha * gv +
+                              (1.0 - self._gaze_alpha) * self._gaze_ema)
+        gaze_vec    = self._gaze_ema
+        gaze_offset = float(np.linalg.norm(gaze_vec))
+
+        # Deadzone: below threshold the iris is centered (looking straight) and
+        # the direction is dominated by noise, so draw no arrow.  (#2)
+        if gaze_offset < self._gaze_dead:
+            gaze_end = (int(left_iris[0]), int(left_iris[1]))
+        else:
+            gaze_end = (int(left_iris[0] + gaze_vec[0] * self._gaze_gain),
+                        int(left_iris[1] + gaze_vec[1] * self._gaze_gain))
 
         return FaceFeatures(
             bbox=bbox, ear=ear,

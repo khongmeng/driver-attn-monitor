@@ -19,7 +19,7 @@ def main():
     cfg = load_config()
 
     cam      = Camera(cfg['camera'])
-    analyzer = FaceAnalyzer(cfg['face_mesh'])
+    analyzer = FaceAnalyzer(cfg['face_mesh'], cfg.get('gaze', {}))
     detector = StateDetector(cfg)
 
     fps_timer   = time.time()

@@ -17,6 +17,11 @@ head_pose:
   yaw_threshold: 30      # degrees left/right before "distracted"
   pitch_threshold: 20    # degrees up/down before "distracted"
 
+gaze:
+  arrow_gain: 220        # px per unit of normalized iris offset; arrow length scales with gaze (not fixed)
+  deadzone: 0.04         # normalized offset below this = looking straight ahead, no arrow drawn
+  smoothing: 0.35        # EMA factor per frame (0 = frozen, 1 = no smoothing / raw)
+
 state:
   perclos_window_sec: 60   # rolling window for PERCLOS calculation
   drowsy_perclos: 0.20     # PERCLOS >= 20% triggers drowsy alert

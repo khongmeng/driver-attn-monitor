@@ -58,7 +58,7 @@ def main():
     if not args.no_save and out_path:
         writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
 
-    analyzer = FaceAnalyzer(cfg['face_mesh'])
+    analyzer = FaceAnalyzer(cfg['face_mesh'], cfg.get('gaze', {}))
     objdet   = ObjectDetector(cfg['object_detector'])
     detector = StateDetector(cfg)
 
