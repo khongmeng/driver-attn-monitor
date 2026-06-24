@@ -116,16 +116,18 @@ The FaceMesh prototype is fragile because **every signal is a geometric heuristi
 
 ```
 inference/      Jetson runtime (camera + face analysis + state + overlay)
-tools/          Operator-facing utilities (data-collection recorder, etc.)
+tools/          Operator-facing utilities (recorder + camera preview)
 train/          PC training scaffold (RTX 4070 Ti Super)
 models/         Local model weights (gitignored)
 recordings/     Captured session videos (gitignored)
-deepstream/     DeepStream configs + TAO models (future TensorRT pipeline)
-assets/         Test videos and sample images
-docs/           Dev log, reference links, recording guide
+docs/           Dev log, reference links, recording guide, manual
 hardware/       Hardware notes and setup photos
-archive/        Old exploration scripts (v1–v8)
 ```
+
+The old `archive/` (v1–v8 exploration scripts, CSI-Camera, DeepStream reference
+apps), `assets/` test videos, and `imgs/` were removed in cleanup (commit
+`4b40798`, 2026-06-23). The DeepStream production pipeline is still future work
+(see "Target production setup"); there is no `deepstream/` dir yet.
 
 ## Data collection
 

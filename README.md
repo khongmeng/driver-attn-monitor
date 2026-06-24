@@ -19,14 +19,16 @@ Conducted by Khongmeng Kormoua, supervised by Dr. Cheol-Hong Min.
 
 ```
 inference/      Jetson runtime (camera + face analysis + state + overlay)
+tools/          Operator utilities (recorder + USB camera preview)
 train/          PC training scripts (RTX 4070 Ti Super)
 models/         Local model weights (gitignored — download or export separately)
-deepstream/     DeepStream configs + TAO models (future TensorRT pipeline)
-assets/         Test videos and sample images
-docs/           Dev log and reference links
+recordings/     Captured session videos (gitignored)
+docs/           Dev log, reference links, recording guide, manual
 hardware/       Hardware notes and setup photos
-archive/        Old exploration scripts (v1–v8) — kept for reference
 ```
+
+> Old `archive/` exploration scripts, `assets/` test videos, and `imgs/` were
+> removed in cleanup. The DeepStream production pipeline is still future work.
 
 ---
 
