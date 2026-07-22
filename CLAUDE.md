@@ -51,9 +51,68 @@ The FaceMesh prototype is fragile because **every signal is a geometric heuristi
 3. Swap in ② 6DRepNet → fixes yaw, makes DISTRACTED real.
 4. Swap in ① SCRFD → solid crops + NO_FACE.
 5. ④ state: rules on the now-reliable signals first; upgrade to fine-tuned MobileNetV3 once rig clips are labeled.
-6. Gaze (L2CS-Net / gaze-estimation-adas-0002) is **optional** — not in the 4-state taxonomy, defer it.
+6. Gaze (gaze-estimation-adas-0002) is **optional** for the minimal Jetson path, but the offline cascade shows it lifts off-road detection 80%→92% over head pose alone (catches eyes-only glances). Now implemented as stage ⑤; keep it as a DISTRACTED feature, port to Jetson after ①–④.
 
 **Modular cascade vs. single end-to-end model:** start modular (above) — debuggable, fixable one stage at a time, matches the transfer-learning approach. A single end-to-end temporal net (e.g. trained on DMD video) can be more accurate but is a black box needing far more labeled data.
+
+## Feature-extraction cascade (IMPLEMENTED, PC-side offline)
+
+Stages ①②③⑤ + the temporal layer now exist as a **pluggable offline cascade** in
+`train/cascade/`, run over DMD videos to build the training set for stage ④. This
+is the PC-side training-prep counterpart to the (still-future) Jetson runtime
+cascade. See `train/README.md` (how to run), `train/FEATURES.md` (feature schema),
+and **`docs/METHODOLOGY.md`** (full pipeline / parameters / decisions / results —
+the paper reference; keep it updated).
+
+```
+DMD *_rgb_face.mp4
+  → ① SCRFD-500M (InsightFace buffalo_sc) → face box + 5 keypoints
+  → ② 6DRepNet (pip sixdrepnet)           → yaw/pitch/roll
+  → ③ open-closed-eye-0001 (ONNX)         → eye open/closed
+  → ⑤ gaze-estimation-adas-0002 (OpenVINO)→ gaze yaw/pitch (uses ② + eye crops)
+  → temporal: PERCLOS + blink             → train/output/features/<session>.csv (+ DMD GT)
+```
+
+- **Run:** `python -m train.extract_features --task drowsiness|distraction` then
+  `python -m train.validate train/output/...`. Models in `train/cascade/`, DMD
+  parsing (OpenLABEL→per-frame labels, drowsiness + distraction) in `train/dmd/`,
+  config under `cascade:` in `config.yaml`, weights via `python -m train.download_models`.
+- **Drowsiness validation (gA_1_s5, 1500 frames):** face 100%; eye-state vs GT
+  94.9% acc (98.2% tuned, closed recall 98.6%); blink 34 vs GT 25.
+- **Distraction validation (gA_1_s1, 900 frames)** against `gaze_on_road` GT:
+  head-pose `|yaw|` alone predicts off-road at **80%**; the **gaze model lifts it
+  to 94%** (on-road 11° vs off-road 29° gaze deviation) — gaze catches eyes-only
+  glances head pose misses, so it earns its place as a DISTRACTED feature.
+  (Gaze conventions, verified vs known-direction frames: feed
+  `head_pose_angles=[yaw, -pitch, roll]` (6DRepNet pitch sign inverted vs Intel);
+  flip output x to image frame (`gv[0]=-gv[0]`, model is anatomical); forward
+  axis −z. Feature signs: gaze_yaw + = image-right, gaze_pitch − = down.)
+  Stored head pose is put in the **same image frame**: 6DRepNet yaw is mirrored
+  vs the image so the stored `yaw` is negated (pitch already matches); head and
+  gaze then share +yaw=image-right / −pitch=down. (The gaze stage still gets raw
+  6DRepNet angles internally.) Sign-only changes, so |yaw|/|gaze| validation is
+  unaffected.
+- DMD has **no continuous head-pose GT** (validated by range only); gaze is
+  validated via the distraction set's `gaze_on_road` labels.
+- **Stage ④ status:** MLP baselines trained on the 218k-frame table + 4 added
+  rolling-window temporal features (11 total; `train/train_state.py`, same
+  driver split throughout): 4-state (default, macro-F1 **0.435**, was 0.35),
+  **binary ATTENTIVE/INATTENTIVE** (`--classes binary`, macro-F1 **0.643**,
+  ROC-AUC 0.70, was 0.62), and **three-class FOCUSED/DISTRACTED/FATIGUED**
+  (`--classes three`, DROWSY+TIRED merged) additionally tuned with dampened
+  class weighting + focal loss + post-hoc smoothing (`--loss focal
+  --weight-power 0.3 --smooth-window 30`) reaching **macro-F1 0.60** —
+  confirms the original 0.35 baseline was method-limited (aggressive
+  weighting + no temporal context), not data-limited; the same weight/loss
+  tuning is the obvious next step for the four-state and binary checkpoints
+  too. Models in `models/state_classifier/` (`binary/`, `three/`);
+  `train/run_live.py` auto-detects the class set from the checkpoint. Results
+  + discussion: `docs/METHODOLOGY.md` §8 (§8.3 for the latest).
+- **Not yet done:** porting the 4 new rolling temporal features into the live
+  runtime (currently offline-only; `run_live.py` neutralizes them to the
+  training mean if a checkpoint uses them), a real sequence model if a gap
+  remains after that, TIRED/yawn signal, multi-session threshold calibration,
+  porting the cascade to the Jetson runtime as TRT FP16 engines.
 
 ## Recommended models
 
@@ -73,7 +132,8 @@ The FaceMesh prototype is fragile because **every signal is a geometric heuristi
 ### Stage 3 — Eye State (PERCLOS)
 - **open-closed-eye-0001** (OpenVINO OMZ) — 32x32 input, 0.0014 GFLOPs, 95.84% accuracy, essentially free
   - GitHub: https://github.com/openvinotoolkit/open_model_zoo/blob/master/models/public/open-closed-eye-0001/README.md
-  - Convert: `omz_converter` → ONNX → TRT. Run per-eye, accumulate over sliding window for PERCLOS.
+  - **Direct ONNX** (old `download.01.org` is dead): `storage.openvinotoolkit.org/repositories/open_model_zoo/public/2022.1/open-closed-eye-0001/open_closed_eye.onnx` — fetched by `train/download_models.py`.
+  - **Preprocessing (critical):** RGB, `(x − 127.5)/255`. Raw 0–255 BGR makes the in-model softmax overflow to `[0, nan]`. Output is already softmaxed. Run per-eye, accumulate over sliding window for PERCLOS.
 
 ### Stage 4 — State Classifier
 - Fine-tune **MobileNetV3-Small** or **EfficientNet-B0** on features (head pose angles + PERCLOS + yaw deviation)
@@ -117,9 +177,11 @@ The FaceMesh prototype is fragile because **every signal is a geometric heuristi
 ```
 inference/      Jetson runtime (camera + face analysis + state + overlay)
 tools/          Operator-facing utilities (recorder + camera preview)
-train/          PC training scaffold (RTX 4070 Ti Super)
-models/         Local model weights (gitignored)
+train/          PC training (RTX 4070 Ti Super): cascade/ (impl. feature-extraction
+                cascade), dmd/ (DMD parsing), extract_features.py, validate.py
+models/         Local model weights (gitignored; eye_state/ ONNX fetched by script)
 recordings/     Captured session videos (gitignored)
+datasets/       DMD dataset (gitignored; extract the per-group .tar.gz in place)
 docs/           Dev log, reference links, recording guide, manual
 hardware/       Hardware notes and setup photos
 ```
@@ -136,7 +198,7 @@ Driver-attention data is captured in the lab by pairing the Jetson rig with a PC
 ## Environment
 
 - Jetson inference: conda env `dms-infer` (`inference/environment.yml`). System OpenCV is symlinked in — do not pip-install opencv. See README.
-- PC training: conda env `dms-train` (`train/environment.yml`).
+- PC training: conda env `dms-train` (`train/environment.yml`). **Torch comes from the PyTorch pip wheel index** — the old `pytorch-cuda=12.8` conda pin does not solve (conda metapackage stopped at 12.4). `insightface` now installs as a prebuilt wheel (no compiler). Keep `config.yaml` ASCII — Windows gbk locale breaks `yaml.safe_load` on non-ASCII. See [[dms-train-env-gotchas]].
 - Legacy `mp` env from early MediaPipe experiments still appears in `docs/log.txt`; superseded by `dms-infer`.
 - All tunable parameters in `config.yaml` — no need to edit source files.
 - See `docs/log.txt` for setup history and troubleshooting.

@@ -28,6 +28,7 @@ models/**/*.caffemodel
 models/**/*.etlt
 models/**/*.uff
 models/**/*.bin
+models/**/*.xml
 
 # DeepStream artifacts
 *.engine
@@ -42,6 +43,9 @@ datasets/
 *.log
 runs/
 wandb/
+
+# Extracted feature tables / annotated QA videos (derived from datasets/)
+train/output/
 
 # Recorded data collection sessions
 # recordings/ # for now i will push some recording data

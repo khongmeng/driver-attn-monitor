@@ -34,3 +34,37 @@ object_detector:
 display:
   window_title: "DMS - Driver Monitoring System"
   show_fps: true
+
+# --- PC-side feature-extraction cascade (train/extract_features.py) -----------
+# Used only by the offline DMD pipeline on the PC, not the Jetson runtime above.
+cascade:
+  use_gpu: true                 # onnxruntime CUDA EP / torch CUDA if available
+
+  face:                         # (1) SCRFD via InsightFace
+    model_pack: buffalo_sc      # SCRFD-500M detector (+5pt keypoints)
+    det_size: 640
+    det_thresh: 0.5
+
+  head_pose:                    # (2) 6DRepNet
+    enabled: true
+    crop_margin: 0.25           # expand SCRFD box this fraction before pose
+
+  eye_state:                    # (3) open-closed-eye-0001 (ONNX)
+    enabled: true
+    onnx_path: models/eye_state/open_closed_eye.onnx
+    input_size: 32
+    open_index: 1               # output index of the "open" class
+    bgr: false                  # model trained on RGB (MO --reverse_input_channels)
+    scale: 0.00392156862745098  # 1/255
+    mean: 127.5                 # (x - 127.5) / 255  -> normalized input
+    eye_box_frac: 0.30          # eye crop half-size as fraction of inter-ocular dist
+
+  gaze:                         # (5) gaze-estimation-adas-0002 (OpenVINO IR)
+    enabled: true               # finer "looking away" signal for DISTRACTED
+    model_xml: models/gaze/gaze-estimation-adas-0002.xml
+    eye_box_frac: 0.25          # eye crop half-size as fraction of inter-ocular dist
+
+  temporal:                     # PERCLOS / blink (driven by the eye model)
+    eye_closed_thresh: 0.5      # eye_open_prob below this = closed
+    blink_min_frames: 1         # consecutive closed frames to count a blink
+    perclos_window_sec: 60

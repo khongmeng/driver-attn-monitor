@@ -7,3 +7,17 @@ opencv-python
 pyyaml
 tqdm
 matplotlib
+pandas               # DMD feature tables
+scikit-learn
+
+# --- feature-extraction cascade (train/extract_features.py) ---
+# GPU (RTX 4070 Ti Super): install torch from the cu124 wheel index:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# onnxruntime-gpu MUST match torch's CUDA: 1.22.x = CUDA 12 (matches cu124);
+# 1.27.x needs CUDA 13 and will fail to load its CUDA provider here. train/cascade
+# adds torch/lib to the DLL path so onnxruntime finds cuDNN 9 / cuBLAS 12.
+onnxruntime-gpu==1.22.0   # CUDA 12; use plain `onnxruntime` for CPU-only
+insightface          # SCRFD-500M face detector (stage ①)
+sixdrepnet           # 6DRepNet head pose (stage ②)
+openvino             # gaze-estimation-adas-0002 IR (stage ⑤, eye gaze; CPU is fine)
+onnx
