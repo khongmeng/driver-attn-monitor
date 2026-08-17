@@ -10,15 +10,22 @@ Conducted by Khongmeng Kormoua, supervised by Dr. Cheol-Hong Min.
 
 ## What this project does
 
-Classifies the driver into one of four states, plus a no-driver fallback:
+Classifies the driver into one of three states, plus a no-driver fallback:
 
 | State | Meaning |
 |---|---|
 | **FOCUSED** | Eyes open, looking at the road |
 | **DISTRACTED** | Head turned away / not looking at the road |
-| **DROWSY** | Eyes closed for a large fraction of the last ~15–60s (PERCLOS) |
-| **TIRED** | Early fatigue signs — yawning, low vigilance |
+| **FATIGUED** | Drowsy (PERCLOS ≥ 20% over ~15–60s) or showing early fatigue (yawning, low vigilance) |
 | **NO_FACE** | Driver not detected (fallback, not a driver state) |
+
+> The original design goal was a **finer 4-state split** (DROWSY vs. TIRED
+> as separate classes). Every trained model in this repo (`models/README.md`)
+> merges them into one **FATIGUED** class instead — at only 14 drivers,
+> DROWSY and TIRED were each too small a slice of the data (~2.7–2.8%) to
+> learn reliably apart. See `CLAUDE.md` and `docs/METHODOLOGY.md` §8.2 for
+> the full reasoning; splitting them back out is possible future work, not
+> something any current model does.
 
 **Target hardware:** NVIDIA Jetson Orin Nano Super + ArduCam IMX477 camera,
 real-time (TensorRT FP16). **Training hardware:** a PC with an NVIDIA GPU
@@ -34,7 +41,7 @@ this repo for a new reader, so read this part carefully:
 |---|---|---|
 | Runs on | Jetson (also runs on a PC for development) | PC only, for now |
 | How it decides state | Geometric heuristics (EAR threshold, `solvePnP` head pose) | Trained models (see `models/README.md`) — the actual cascade + classifier this project's results are about |
-| States it produces | FOCUSED / DROWSY / DISTRACTED / NO_FACE (TIRED reserved, not implemented) | All 5, including TIRED |
+| States it produces | FOCUSED / DROWSY / DISTRACTED / NO_FACE (4-state heuristic; TIRED reserved, never wired up) | FOCUSED / DISTRACTED / FATIGUED / NO_FACE (the merged 3-state taxonomy every trained model actually uses — see below) |
 | Status | Working prototype, cross-platform baseline | Where the real accuracy numbers come from — **not yet ported to the Jetson** |
 
 **In short:** if you're trying to reproduce this project's *results*

@@ -5,14 +5,30 @@ University of St. Thomas research project — Khongmeng Kormoua, supervised by D
 
 ## Project goal
 
-Detect 4 driver states in real time from a single cabin camera, plus a no-driver fallback:
+Detect driver state in real time from a single cabin camera. The **original
+design goal was 4 states** (FOCUSED / DISTRACTED / DROWSY / TIRED, +
+NO_FACE fallback) — but every trained model that actually exists today
+(all 10 in `models/README.md`, including the final 0.810 ensemble) uses a
+**merged 3-state taxonomy**:
+
 - **FOCUSED** — looking at road, eyes open
-- **DISTRACTED** — head yaw > 30° or pitch > 20°
-- **DROWSY** — PERCLOS ≥ 20% over last 60s
-- **TIRED** — early fatigue (yawning, low vigilance) — *yawn signal exists in the offline training pipeline (§8.7, MAR-based) and is part of the final recommended model (macro-F1 0.810 ensemble, see models/README.md), not yet wired into the live Jetson runtime*
+- **DISTRACTED** — head turned / gaze off-road
+- **FATIGUED** — merges DROWSY (PERCLOS ≥ 20% over a 15–60s window) and
+  TIRED (yawning, low vigilance) into one class
 - **NO_FACE** — driver not detected (fallback, not a driver state)
 
-**Approach:** Transfer learning — compose pretrained models for face detection, head pose, and eye state; fine-tune for the 4-class output. Avoid training from scratch.
+**Why merged, not a design preference:** at only 14 drivers, DROWSY and
+TIRED were each ~2.7–2.8% of the training data — too sparse to learn
+separately and still generalize (confirmed empirically, not assumed; see
+`docs/METHODOLOGY.md` §8.2 for the binary/4-state comparison that surfaced
+this). The DROWSY/TIRED split is not implemented anywhere in the current
+runtime (`inference/`'s heuristic prototype still has separate DROWSY/TIRED
+enum values reserved, but TIRED was never wired up there either — see
+"Two runtimes" in the root `README.md`). Splitting fatigue back into two
+classes remains possible future work if more drivers become available, but
+isn't the current state of any trained model.
+
+**Approach:** Transfer learning — compose pretrained models for face detection, head pose, and eye state; fine-tune for the classifier output. Avoid training from scratch.
 
 **Paper framing (in progress, 2026-08):** rescoping the paper around
 **RGB-only input + embedded resource constraints** (target: Jetson Orin

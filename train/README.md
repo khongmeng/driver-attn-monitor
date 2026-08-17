@@ -101,7 +101,8 @@ datasets/DMD/drowsiness/dmd-dataset-drowsiness-gA-1/dmd/gA/1/s5/
 
 The **drowsiness** subset carries eye-state/blink/yawn labels; the
 **distraction** subset carries gaze/driver-action labels. Both are used —
-see `docs/METHODOLOGY.md` for how each maps to the 4 states.
+see `docs/METHODOLOGY.md` for how each maps to the 3 states (FOCUSED /
+DISTRACTED / FATIGUED — see the note on class modes in step 6 below).
 
 ## 4. Extract features
 
@@ -148,6 +149,16 @@ python -m train.train_state --classes three --model mlp
 python -m train.train_sequence --classes three --loss focal --weight-power 0.3 \
     --oversample 5.0 --smooth-window 30 --epochs 200 --eval-every 1
 ```
+
+Both scripts support `--classes {four,three,binary}` — `four` is the
+original full taxonomy (FOCUSED/DISTRACTED/DROWSY/TIRED), `binary` collapses
+everything non-FOCUSED into one INATTENTIVE class, and `three`
+(FOCUSED/DISTRACTED/FATIGUED, merging DROWSY+TIRED) is what **every one of
+the 10 kept models actually uses** — DROWSY and TIRED were each too small a
+slice of the data at 14 drivers (~2.7–2.8%) to learn reliably apart (see
+`docs/METHODOLOGY.md` §8.2). `four`/`binary` still work if you want to
+explore that tradeoff yourself, but they're not part of the current
+comparison or any kept checkpoint.
 
 We compared **10 architectures** this way — see **`models/README.md`** for
 the full comparison table, exact reproduce-command per architecture, and
