@@ -17,6 +17,26 @@ Three class modes (``--classes``):
           All modes use the identical driver split (same seed, same held-out
           drivers), so results are directly comparable.
 
+``--feature-set`` selects which columns feed the model:
+  full   (default) all 11 columns, incl. the 4 rolling-window temporal
+         features added in the §8.3 experiment (perclos_15s, yaw_std_5s,
+         gaze_yaw_std_5s, eye_open_prob_mean_5s).
+  base   the original 7 per-frame cascade features only (no temporal
+         aggregates) — use this to reproduce pre-§8.3 behavior.
+
+``--balance`` controls training-set class balance (val is always left at
+its natural distribution so eval stays comparable across experiments):
+  none         (default) no resampling, class weighting only.
+  undersample  randomly undersample every class in the *training* split
+               down to the size of the smallest class, so the MLP trains
+               on a class-balanced sample instead of relying on loss
+               weighting alone.
+
+Every run's checkpoint goes to a directory that encodes the non-default
+options (e.g. ``models/state_classifier/three_base_balanced``), so
+different experiments never overwrite each other's output — pass
+``--out-dir`` to pick an explicit path instead.
+
 Usage:
     python -m train.train_state                     # 4-state (unchanged)
     python -m train.train_state --classes three     # FOCUSED/DISTRACTED/FATIGUED
@@ -26,6 +46,9 @@ Usage:
     python -m train.train_state --weight-power 0.5  # dampen inverse-freq weights
     python -m train.train_state --loss focal        # focal loss instead of weighted CE
     python -m train.train_state --model gbt         # gradient-boosted trees, not MLP
+    python -m train.train_state --classes three --model svm   # RBF-kernel SVM baseline
+    python -m train.train_state --classes three --model rf    # random forest baseline
+    python -m train.train_state --classes three --feature-set base --balance undersample
 """
 from __future__ import annotations
 
@@ -37,11 +60,19 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import (classification_report, confusion_matrix, f1_score,
                              roc_auc_score)
+from sklearn.svm import SVC
 
-from .build_dataset import FEATURE_COLS as FEATURES
+from .build_dataset import FEATURE_COLS as FULL_FEATURES
+
+# the 7 original per-frame cascade features, i.e. FULL_FEATURES minus the 4
+# rolling-window temporal features added in the §8.3 experiment
+BASE_FEATURES = ["yaw", "pitch", "eye_open_prob", "perclos", "blink_rate",
+                 "gaze_yaw", "gaze_pitch"]
+FEATURE_SETS = {"full": FULL_FEATURES, "base": BASE_FEATURES}
+FEATURES = FULL_FEATURES   # back-compat default for run_live.py's fallback import
 
 STATES = ["FOCUSED", "DISTRACTED", "DROWSY", "TIRED"]   # 4-state class index order
 
@@ -79,6 +110,15 @@ def split_by_driver(df: pd.DataFrame, val_frac: float, seed: int):
         val_drivers |= set(g[:k])
     val_mask = df.driver.isin(val_drivers)
     return ~val_mask, val_mask, sorted(val_drivers)
+
+
+def undersample(df: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """Randomly undersample every class in `df` (by its "y" column) down to
+    the size of the smallest class, so training sees a balanced sample."""
+    rng = np.random.default_rng(seed)
+    n_min = df.y.value_counts().min()
+    parts = [g.sample(n=n_min, random_state=rng.integers(1 << 31)) for _, g in df.groupby("y")]
+    return pd.concat(parts).sample(frac=1, random_state=rng.integers(1 << 31)).reset_index(drop=True)
 
 
 class StateMLP(nn.Module):
@@ -151,12 +191,26 @@ def main():
                          "three = FOCUSED/DISTRACTED/FATIGUED (DROWSY+TIRED merged); "
                          "binary = ATTENTIVE/INATTENTIVE (non-FOCUSED collapsed)")
     ap.add_argument("--out-dir", default=None,
-                    help="default: models/state_classifier (four), "
-                         "models/state_classifier/three, or .../binary")
-    ap.add_argument("--model", choices=["mlp", "gbt"], default="mlp",
+                    help="default: models/state_classifier[/three|/binary], "
+                         "suffixed with _base / _balanced if those options are set")
+    ap.add_argument("--feature-set", choices=sorted(FEATURE_SETS), default="full",
+                    help="full = all 11 features incl. §8.3 temporal aggregates (default); "
+                         "base = original 7 per-frame features only, no temporal aggregates")
+    ap.add_argument("--balance", choices=["none", "undersample"], default="none",
+                    help="none = no resampling, rely on class weighting (default); "
+                         "undersample = randomly undersample the *training* split so every "
+                         "class matches the smallest class's count (val stays natural)")
+    ap.add_argument("--model", choices=["mlp", "gbt", "svm", "rf"], default="mlp",
                     help="mlp = the small torch MLP (default, exports ONNX); "
-                         "gbt = sklearn HistGradientBoostingClassifier, a model-family "
-                         "comparison baseline (not exported, no ONNX path yet)")
+                         "gbt = sklearn HistGradientBoostingClassifier; "
+                         "svm = sklearn SVC (RBF kernel, subsampled — see --svm-max-train); "
+                         "rf = sklearn RandomForestClassifier. "
+                         "gbt/svm/rf are model-family comparison baselines (not exported, "
+                         "no ONNX path — use --model mlp for a deployable checkpoint)")
+    ap.add_argument("--svm-max-train", type=int, default=30000,
+                    help="RBF-kernel SVC training is O(n^2)-O(n^3) and doesn't scale to the "
+                         "full ~170k-row training split the way GBT/RF do, so --model svm "
+                         "stratified-subsamples the training set down to this many rows")
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -179,9 +233,15 @@ def main():
     np.random.seed(args.seed)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     classes = CLASS_SETS[args.classes]
-    out_dir = args.out_dir or (
-        "models/state_classifier" if args.classes == "four"
-        else f"models/state_classifier/{args.classes}")
+    FEATURES = FEATURE_SETS[args.feature_set]
+    if args.out_dir:
+        out_dir = args.out_dir
+    else:
+        out_dir = ("models/state_classifier" if args.classes == "four"
+                   else f"models/state_classifier/{args.classes}")
+        suffix = ("_base" if args.feature_set == "base" else "") + \
+                 ("_balanced" if args.balance != "none" else "")
+        out_dir += suffix
 
     df = pd.read_csv(args.table)
     df["driver"] = df.session.map(driver_of)
@@ -205,6 +265,10 @@ def main():
     print("\ntrain class counts:", tr.target.value_counts().to_dict())
     print("val   class counts:", va.target.value_counts().to_dict())
 
+    if args.balance == "undersample":
+        tr = undersample(tr, args.seed)
+        print("train class counts (after undersampling):", tr.target.value_counts().to_dict())
+
     Xtr_np = tr[FEATURES].to_numpy(np.float32)
     ytr_np = tr.y.to_numpy()
     Xva_np = va[FEATURES].to_numpy(np.float32)
@@ -215,12 +279,39 @@ def main():
     w = (counts.sum() / (len(classes) * np.clip(counts, 1, None))) ** args.weight_power
     print("\nclass weights:", {classes[i]: round(float(w[i]), 2) for i in range(len(classes))})
 
-    if args.model == "gbt":
+    if args.model in ("gbt", "svm", "rf"):
         sample_weight = w[ytr_np]
-        gbt = HistGradientBoostingClassifier(max_iter=300, random_state=args.seed)
-        print(f"\ntraining HistGradientBoostingClassifier …")
-        gbt.fit(Xtr_np, ytr_np, sample_weight=sample_weight)
-        proba = gbt.predict_proba(Xva_np)
+        class_weight = {i: float(w[i]) for i in range(len(classes))}
+        Xtr_fit, ytr_fit, sw_fit = Xtr_np, ytr_np, sample_weight
+
+        if args.model == "svm" and len(Xtr_np) > args.svm_max_train:
+            rng = np.random.default_rng(args.seed)
+            per_class = max(1, args.svm_max_train // len(classes))
+            idx = np.concatenate([
+                rng.choice(np.where(ytr_np == c)[0],
+                          size=min((ytr_np == c).sum(), per_class), replace=False)
+                for c in range(len(classes))
+            ])
+            Xtr_fit, ytr_fit, sw_fit = Xtr_np[idx], ytr_np[idx], sample_weight[idx]
+            print(f"\nSVM: subsampled training set {len(Xtr_np):,} -> {len(Xtr_fit):,} rows, "
+                  f"stratified by class (RBF kernel doesn't scale to the full table)")
+
+        if args.model == "gbt":
+            model_sk = HistGradientBoostingClassifier(max_iter=300, random_state=args.seed)
+            print(f"\ntraining HistGradientBoostingClassifier …")
+            model_sk.fit(Xtr_fit, ytr_fit, sample_weight=sw_fit)
+        elif args.model == "svm":
+            model_sk = SVC(kernel="rbf", C=10.0, gamma="scale", probability=True,
+                           class_weight=class_weight, random_state=args.seed)
+            print(f"\ntraining SVC (RBF kernel) on {len(Xtr_fit):,} rows …")
+            model_sk.fit(Xtr_fit, ytr_fit)
+        else:
+            model_sk = RandomForestClassifier(n_estimators=300, class_weight=class_weight,
+                                              random_state=args.seed, n_jobs=-1)
+            print(f"\ntraining RandomForestClassifier …")
+            model_sk.fit(Xtr_fit, ytr_fit)
+
+        proba = model_sk.predict_proba(Xva_np)
         pred = proba.argmax(1)
     else:
         Xtr = torch.tensor(Xtr_np)

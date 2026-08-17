@@ -126,6 +126,50 @@ def report(df: pd.DataFrame):
         print(f"    confusion  TP={tp} TN={tn} FP={fp} FN={fn}")
         print(f"    best threshold on open_prob: {bt:.2f}  -> acc {bacc:.1%}")
 
+    # --- yawn (MAR) vs GT ---
+    print("\n[mouth / yawn]")
+    mouth = faces.dropna(subset=["mar"])
+    mouth = mouth[mouth["gt_yawn"].isin([0, 1])]
+    if len(mouth) == 0:
+        print("    no overlapping frames with mouth model output + GT yawn")
+    else:
+        gt_yawn = mouth["gt_yawn"].astype(int).to_numpy()
+        mar = mouth["mar"].to_numpy()
+        pred_open = mouth["mouth_open"].astype(int).to_numpy()
+        acc = float(np.mean(pred_open == gt_yawn))
+        tp = int(np.sum((pred_open == 1) & (gt_yawn == 1)))
+        tn = int(np.sum((pred_open == 0) & (gt_yawn == 0)))
+        fp = int(np.sum((pred_open == 1) & (gt_yawn == 0)))
+        fn = int(np.sum((pred_open == 0) & (gt_yawn == 1)))
+        prec = tp / max(tp + fp, 1)
+        rec = tp / max(tp + fn, 1)
+        bt, bacc = _best_high_threshold(mar, gt_yawn)
+        print(f"    frames compared: {len(mouth)}  (GT yawn={gt_yawn.sum()}, not={(gt_yawn==0).sum()})")
+        print(f"    MAR yawn>open_thresh accuracy: {acc:.1%}")
+        print(f"    yawn precision / recall      : {prec:.1%} / {rec:.1%}")
+        print(f"    confusion  TP={tp} TN={tn} FP={fp} FN={fn}")
+        not_yawn_mar = f"{mar[gt_yawn==0].mean():.2f}" if (gt_yawn == 0).any() else "n/a"
+        yawn_mar = f"{mar[gt_yawn==1].mean():.2f}" if (gt_yawn == 1).any() else "n/a"
+        print(f"    best threshold on MAR: {bt:.2f}  -> acc {bacc:.1%}  "
+              f"(not-yawning {not_yawn_mar} vs yawning {yawn_mar})")
+
+    print("\n[yawn count vs GT]")
+    per_sess = []
+    for name, g in df.groupby("session"):
+        if "gt_yawn" not in g or g["gt_yawn"].isna().all():
+            continue
+        pred_yawns = int(g["yawn_count"].max()) if "yawn_count" in g else 0
+        gt_yawns = _count_intervals(g["gt_yawn"])
+        per_sess.append((name, pred_yawns, gt_yawns))
+    if per_sess:
+        tot_pred = sum(p for _, p, _ in per_sess)
+        tot_gt = sum(gt for _, _, gt in per_sess)
+        print(f"    cascade yawn events: {tot_pred}   GT yawn intervals: {tot_gt}")
+        for name, p, gt in per_sess[:10]:
+            print(f"      {name[:40]:40s}  cascade={p:4d}  GT={gt:4d}")
+    else:
+        print("    no drowsiness-set sessions with GT yawn labels found")
+
     # --- looking-away vs GT (distraction set: gaze_on_road) ---
     if "gt_gaze_off_road" in df.columns and df["gt_gaze_off_road"].notna().any():
         print("\n[DISTRACTED — head pose / gaze vs gaze_on_road GT]")

@@ -51,6 +51,9 @@ FEATURE_COLS = [
     "yaw", "pitch", "eye_open_prob", "perclos", "blink_rate",
     "gaze_yaw", "gaze_pitch",
     "perclos_15s", "yaw_std_5s", "gaze_yaw_std_5s", "eye_open_prob_mean_5s",
+    "mar", "yawn_rate",   # §8.7: mouth aspect ratio + yawn rate (new cascade stage,
+                          # gives TIRED an actual live-computable signal instead of
+                          # being inferred indirectly from eye/head cues)
 ]
 
 
@@ -160,7 +163,8 @@ def main():
               args.std_window, args.perclos_window)
 
     keep = (["session", "task", "frame", "state"] + FEATURE_COLS +
-            ["roll", "eye_closed", "blink", "blink_count", "det_score"])
+            ["roll", "eye_closed", "blink", "blink_count", "det_score",
+             "mouth_open", "yawn_active", "yawn_count"])
     keep = [c for c in keep if c in df.columns]
     df[keep].to_csv(args.out, index=False)
 

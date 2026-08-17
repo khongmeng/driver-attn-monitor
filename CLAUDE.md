@@ -9,10 +9,18 @@ Detect 4 driver states in real time from a single cabin camera, plus a no-driver
 - **FOCUSED** — looking at road, eyes open
 - **DISTRACTED** — head yaw > 30° or pitch > 20°
 - **DROWSY** — PERCLOS ≥ 20% over last 60s
-- **TIRED** — early fatigue (yawning, low vigilance) — *enum reserved, detection not yet wired up*
+- **TIRED** — early fatigue (yawning, low vigilance) — *yawn signal exists in the offline training pipeline (§8.7, MAR-based) and is part of the final recommended model (macro-F1 0.810 ensemble, see models/README.md), not yet wired into the live Jetson runtime*
 - **NO_FACE** — driver not detected (fallback, not a driver state)
 
 **Approach:** Transfer learning — compose pretrained models for face detection, head pose, and eye state; fine-tune for the 4-class output. Avoid training from scratch.
+
+**Paper framing (in progress, 2026-08):** rescoping the paper around
+**RGB-only input + embedded resource constraints** (target: Jetson Orin
+Nano Super) rather than macro-F1 alone — the core question is which of the
+10 compared architectures (`models/README.md`) is the right accuracy-vs-
+compute operating point under a real embedded power/latency/memory budget,
+not just which scores highest. See `docs/related_work_embedded.md` for the
+supporting hardware-constraint and related-work research.
 
 All suggestions should be Jetson-compatible (ONNX Runtime TRT EP or TensorRT), and respect the 4-state taxonomy (+ NO_FACE).
 
@@ -51,7 +59,7 @@ The FaceMesh prototype is fragile because **every signal is a geometric heuristi
 3. Swap in ② 6DRepNet → fixes yaw, makes DISTRACTED real.
 4. Swap in ① SCRFD → solid crops + NO_FACE.
 5. ④ state: rules on the now-reliable signals first; upgrade to fine-tuned MobileNetV3 once rig clips are labeled.
-6. Gaze (gaze-estimation-adas-0002) is **optional** for the minimal Jetson path, but the offline cascade shows it lifts off-road detection 80%→92% over head pose alone (catches eyes-only glances). Now implemented as stage ⑤; keep it as a DISTRACTED feature, port to Jetson after ①–④.
+6. Gaze (gaze-estimation-adas-0002) is **optional** for the minimal Jetson path. Now implemented as stage ⑤. **Correction (2026-07-29):** the original claim here ("lifts off-road detection 80%→92/94%") was measured on one session with a self-tuned threshold and does not reproduce on the full 65-session validation — see the corrected numbers below. Gaze's value as a DISTRACTED feature needs re-assessment (proper held-out threshold tuning, not same-session), not assumed; still worth keeping for now, but don't cite the old lift figure.
 
 **Modular cascade vs. single end-to-end model:** start modular (above) — debuggable, fixable one stage at a time, matches the transfer-learning approach. A single end-to-end temporal net (e.g. trained on DMD video) can be more accurate but is a black box needing far more labeled data.
 
@@ -70,20 +78,37 @@ DMD *_rgb_face.mp4
   → ② 6DRepNet (pip sixdrepnet)           → yaw/pitch/roll
   → ③ open-closed-eye-0001 (ONNX)         → eye open/closed
   → ⑤ gaze-estimation-adas-0002 (OpenVINO)→ gaze yaw/pitch (uses ② + eye crops)
-  → temporal: PERCLOS + blink             → train/output/features/<session>.csv (+ DMD GT)
+  → mouth: 2d106det (InsightFace buffalo_s)→ Mouth Aspect Ratio (MAR) → yawn (§8.7)
+  → temporal: PERCLOS + blink + yawn      → train/output/features/<session>.csv (+ DMD GT)
 ```
 
 - **Run:** `python -m train.extract_features --task drowsiness|distraction` then
   `python -m train.validate train/output/...`. Models in `train/cascade/`, DMD
   parsing (OpenLABEL→per-frame labels, drowsiness + distraction) in `train/dmd/`,
   config under `cascade:` in `config.yaml`, weights via `python -m train.download_models`.
-- **Drowsiness validation (gA_1_s5, 1500 frames):** face 100%; eye-state vs GT
-  94.9% acc (98.2% tuned, closed recall 98.6%); blink 34 vs GT 25.
-- **Distraction validation (gA_1_s1, 900 frames)** against `gaze_on_road` GT:
-  head-pose `|yaw|` alone predicts off-road at **80%**; the **gaze model lifts it
-  to 94%** (on-road 11° vs off-road 29° gaze deviation) — gaze catches eyes-only
-  glances head pose misses, so it earns its place as a DISTRACTED feature.
-  (Gaze conventions, verified vs known-direction frames: feed
+- **Drowsiness validation, single-session spot-check (gA_1_s5, 1500 frames):**
+  face 100%; eye-state vs GT 94.9% acc (98.2% tuned, closed recall 98.6%);
+  blink 34 vs GT 25.
+- **Distraction validation, single-session spot-check (gA_1_s1, 900 frames)**
+  against `gaze_on_road` GT: head-pose `|yaw|` alone predicts off-road at
+  **80%**; the gaze model appeared to lift it to 94% (on-road 11° vs off-road
+  29° gaze deviation).
+- **Full-dataset validation, all 65 sessions / 227k frames (2026-07-29,
+  `train/validate.py`, see `docs/METHODOLOGY.md` §6.1):** does **not**
+  reproduce the single-session numbers above. Eye-state: 96.8% acc but closed
+  **recall drops to 82.6%** (TP=3657 TN=27964 FP=278 FN=769). Distraction:
+  `|yaw|>48` → 82.8% vs `gaze>38` → 83.0% — **gaze and head-pose are
+  statistically tied**, not gaze-beats-head-pose; per-session accuracy ranges
+  49%–99%. Re-running the *same* self-tuning validation on gA_1_s1 alone today
+  gives 87.8%/87.5%/88.6% (yaw/gaze/combined) — not 80%/94% — so the original
+  single-session numbers were almost certainly a threshold tuned and evaluated
+  on the same small slice, not a generalizing result. **Treat the 80%→94%
+  gaze-lift claim as retracted** until re-validated with a proper held-out
+  threshold-tuning split. Eye-state and blink-count also found to vary a lot
+  per-session (blink count aggregate looks right, 1650 vs GT 1633, but that's
+  cancellation — per-session swings from −85% to +41%).
+  (Gaze conventions, verified vs known-direction frames — still valid,
+  independent of the accuracy-lift claim above: feed
   `head_pose_angles=[yaw, -pitch, roll]` (6DRepNet pitch sign inverted vs Intel);
   flip output x to image frame (`gv[0]=-gv[0]`, model is anatomical); forward
   axis −z. Feature signs: gaze_yaw + = image-right, gaze_pitch − = down.)
@@ -94,25 +119,63 @@ DMD *_rgb_face.mp4
   unaffected.
 - DMD has **no continuous head-pose GT** (validated by range only); gaze is
   validated via the distraction set's `gaze_on_road` labels.
-- **Stage ④ status:** MLP baselines trained on the 218k-frame table + 4 added
-  rolling-window temporal features (11 total; `train/train_state.py`, same
-  driver split throughout): 4-state (default, macro-F1 **0.435**, was 0.35),
-  **binary ATTENTIVE/INATTENTIVE** (`--classes binary`, macro-F1 **0.643**,
-  ROC-AUC 0.70, was 0.62), and **three-class FOCUSED/DISTRACTED/FATIGUED**
-  (`--classes three`, DROWSY+TIRED merged) additionally tuned with dampened
-  class weighting + focal loss + post-hoc smoothing (`--loss focal
-  --weight-power 0.3 --smooth-window 30`) reaching **macro-F1 0.60** —
-  confirms the original 0.35 baseline was method-limited (aggressive
-  weighting + no temporal context), not data-limited; the same weight/loss
-  tuning is the obvious next step for the four-state and binary checkpoints
-  too. Models in `models/state_classifier/` (`binary/`, `three/`);
-  `train/run_live.py` auto-detects the class set from the checkpoint. Results
-  + discussion: `docs/METHODOLOGY.md` §8 (§8.3 for the latest).
-- **Not yet done:** porting the 4 new rolling temporal features into the live
-  runtime (currently offline-only; `run_live.py` neutralizes them to the
-  training mean if a checkpoint uses them), a real sequence model if a gap
-  remains after that, TIRED/yawn signal, multi-session threshold calibration,
-  porting the cascade to the Jetson runtime as TRT FP16 engines.
+- **Stage ④ status — MLP baselines (§8.1–§8.5), superseded for the 3-class
+  task by a GRU (§8.6–§8.7):** original MLP baselines on the pre-§6.1 table:
+  4-state macro-F1 0.435, binary (`--classes binary`) 0.643/ROC-AUC 0.70,
+  three-class (`--classes three`, DROWSY+TIRED merged into FATIGUED) tuned to
+  macro-F1 0.60 (`--loss focal --weight-power 0.3 --smooth-window 30`).
+  §8.4/§8.5 explored class-balanced training (undersampling) as an
+  alternative to weighting — better FATIGUED recall (75–85%) but worse
+  macro-F1 (0.45–0.53), a precision/recall tradeoff not a strict win.
+  **§8.6 replaced the per-frame MLP with a small `nn.GRU`
+  (`train/train_sequence.py`)** — real temporal modeling instead of 4
+  hand-picked rolling-window stats, trained on fixed-length chunks but
+  evaluated on full per-session sequences (matches live streaming). Result:
+  **macro-F1 0.773**, the single biggest jump in the project, with FATIGUED
+  precision and recall improving *together* for the first time (0.615/0.74)
+  instead of trading off. Checkpoint (superseded — see `models/README.md` for the current final result, macro-F1 0.810).
+  **§8.7 added the yawn/mouth feature (see below) and retrained the same
+  GRU** — macro-F1 held flat (0.772) but **TIRED recall jumped 55.9%→80.4%**,
+  a targeted, mechanistically-explained win (TIRED is yawn-defined in the
+  labels) at the cost of some DISTRACTED recall. Checkpoint:
+  a checkpoint superseded by later work — see `models/README.md` for the
+  current model set. Both GRU checkpoints and every
+  MLP checkpoint (§8.1–§8.5) coexisted in separate directories at the time.
+  `train/run_live.py`'s `StateClassifier` now auto-detects GRU checkpoints
+  (via the `hidden`/`layers` keys `train_sequence.py` saves) and carries the
+  GRU's hidden state across frames — one `StateClassifier` instance per
+  continuous video/session, same as how it's evaluated offline. Demo videos
+  for all three three-class checkpoints (distraction + drowsiness, held-out
+  driver gC_14) in `train/output/demo_gC14_*_three*.mp4`. Full discussion:
+  `docs/METHODOLOGY.md` §8.3–§8.7.
+- **Feature-extraction validated end-to-end against DMD GT on the full
+  65-session/227k-frame dataset, twice (2026-07-29, `docs/METHODOLOGY.md`
+  §6.1 and §8.7):** §6.1 found and fixed `blink_rate` divide-by-near-zero at
+  session start, and retracted the "gaze lifts distraction accuracy 80%→94%"
+  claim (didn't reproduce outside the single session it was measured on).
+  §8.7 added a new **yawn/mouth stage** (InsightFace 2d106det landmarks →
+  Mouth Aspect Ratio; no pretrained mouth-state model exists like
+  open-closed-eye-0001 does for eyes) — landmark indices verified empirically
+  on real frames, not assumed. Testing §6.1's own recommended blink debounce
+  fix (`blink_min_frames` 1→2) **made blink counting worse** (aggregate ratio
+  0.61x vs the original 1.01x) — reverted. Tuning the yawn MAR threshold to
+  its "best accuracy" value (0.64) similarly **tanked yawn-event recall**
+  (44 vs GT 76, was 87 vs GT 76 at 0.5) — reverted. Also found and fixed a
+  `mar` divide-by-near-zero bug (same shape as `blink_rate`'s). Both reverts
+  + the mar fix were applied **without re-running the ~87-minute extraction**
+  a third time — blink/PERCLOS/mouth-derived columns are pure functions of
+  the already-saved `eye_open_prob`/`mar`, recomputed post-hoc in seconds.
+- **Not yet done:** re-assessing gaze's value as a DISTRACTED feature with a
+  proper held-out threshold split instead of the retracted single-session
+  claim. **Resolved since this section was written:** which three-class
+  checkpoint is "the" model — the ensemble of the gated-fatigue GRU +
+  single-branch GRU, macro-F1 **0.810**, is the final result (see
+  `models/README.md` and §8.16). Retraining 4-state/binary on the
+  corrected+enriched table remains open; the
+  per-session blink-count variance (−85%/+41% swings) remains unresolved
+  (debounce didn't fix it); porting the cascade to the Jetson runtime as TRT
+  FP16 engines (the GRU checkpoints only run live via PyTorch so far, not
+  yet exported/optimized as a TensorRT engine).
 
 ## Recommended models
 

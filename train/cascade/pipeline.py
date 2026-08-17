@@ -16,17 +16,23 @@ from .temporal import TemporalAggregator
 
 
 class CascadePipeline:
-    def __init__(self, detector, head_pose=None, eye_state=None, gaze=None, temporal=None):
+    def __init__(self, detector, head_pose=None, eye_state=None, gaze=None, mouth=None, temporal=None):
         self.detector = detector
         self.head_pose = head_pose
         self.eye_state = eye_state
         self.gaze = gaze
+        self.mouth = mouth
         self.temporal = temporal or TemporalAggregator()
 
     def reset(self):
-        """Clear temporal state between sessions/videos."""
+        """Clear temporal state between sessions/videos — rebuilds with every
+        constructor param the current aggregator has (not just 3 of them),
+        so config-provided overrides survive past the first session instead
+        of silently reverting to the dataclass defaults."""
         t = self.temporal
-        self.temporal = TemporalAggregator(t.eye_thresh, t.blink_min, t.window)
+        self.temporal = TemporalAggregator(
+            t.eye_thresh, t.blink_min, t.window, t.blink_rate_min_elapsed, t.yawn_min_duration
+        )
 
     def process_frame(self, frame_bgr: np.ndarray, frame_idx: int, ts: float) -> FrameFeatures:
         feat = FrameFeatures(frame=frame_idx)
@@ -83,6 +89,23 @@ class CascadePipeline:
         feat.blink_count = self.temporal.blink_count
         feat.blink_rate = blink_rate
         feat.perclos = perclos
+
+        # mouth (MAR -> yawn), independent of the eye/gaze stages above.
+        # Only advances the yawn run-length clock if the stage is actually
+        # enabled — otherwise yawn_count/yawn_rate stay at their FrameFeatures
+        # defaults (0 / NaN) rather than misleadingly reporting "zero yawns
+        # measured" for a stage that never ran.
+        if self.mouth is not None:
+            reading = self.mouth.read(frame_bgr, box)
+            mouth_open = False
+            if reading is not None:
+                feat.mar = reading.mar
+                feat.mouth_open = reading.mouth_open
+                mouth_open = bool(reading.mouth_open)
+            yawn_active, yawn_count, yawn_rate = self.temporal.update_mouth(mouth_open, ts)
+            feat.yawn_active = yawn_active
+            feat.yawn_count = yawn_count
+            feat.yawn_rate = yawn_rate
         return feat
 
 
@@ -149,11 +172,26 @@ def build_pipeline(cfg: dict) -> CascadePipeline:
         except Exception as e:   # noqa: BLE001
             print(f"[cascade] gaze stage disabled: {e}")
 
+    # mouth / yawn (optional — needs the 2d106det landmark ONNX)
+    mouth = None
+    mc = cfg.get("mouth", {})
+    if mc.get("enabled", True):
+        try:
+            from .mouth import Landmark106Mouth
+            mouth = Landmark106Mouth(
+                onnx_path=mc.get("onnx_path", "models/landmark/2d106det.onnx"),
+                open_thresh=mc.get("open_thresh", 0.64),
+                use_gpu=use_gpu,
+            )
+        except Exception as e:   # noqa: BLE001
+            print(f"[cascade] mouth stage disabled: {e}")
+
     tc = cfg.get("temporal", {})
     temporal = TemporalAggregator(
         eye_closed_thresh=tc.get("eye_closed_thresh", 0.5),
         blink_min_frames=tc.get("blink_min_frames", 1),
         perclos_window_sec=tc.get("perclos_window_sec", 60.0),
+        yawn_min_duration_sec=tc.get("yawn_min_duration_sec", 1.0),
     )
 
-    return CascadePipeline(detector, head_pose, eye_state, gaze, temporal)
+    return CascadePipeline(detector, head_pose, eye_state, gaze, mouth, temporal)

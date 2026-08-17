@@ -17,6 +17,10 @@ Usage:
                                                   # binary ATTENTIVE/INATTENTIVE model
     python -m train.run_live --source clip.mp4 --save out.mp4 --no-window
                                                   # batch: annotate a video to disk
+    python -m train.run_live --classifier models/state_classifier/three_gru_gated/state_gru.pt \
+                              models/state_classifier/three_gru_yawn/state_gru.pt
+                                                  # ensemble: averages both models' probabilities
+                                                  # every frame (must share the same class order)
 
 Press Esc or q to quit.
 """
@@ -55,34 +59,89 @@ def load_config(path=None) -> dict:
 
 
 class StateClassifier:
-    """Loads the trained Stage-④ MLP and maps a FrameFeatures row -> state.
+    """Loads the trained Stage-④ classifier and maps a FrameFeatures row -> state.
 
-    The class set (4-state or binary) comes from the checkpoint, so the same
-    runtime works with any model trained by ``train_state.py``.
+    The class set (4-state/binary/three) and feature list come from the
+    checkpoint, so the same runtime works with any model trained by either
+    ``train_state.py`` (a per-frame MLP) or ``train_sequence.py`` (a GRU over
+    the frame sequence) — checkpoints from the latter carry a ``hidden`` /
+    ``layers`` key, used here to tell them apart. The GRU path carries its
+    hidden state across calls (one `StateClassifier` instance = one
+    continuous stream), so frame order matters and a fresh instance is needed
+    per video/session — matches how `train_sequence.py` evaluates it offline
+    (one continuous forward pass per session, not independent per-frame
+    windows).
     """
     def __init__(self, pt_path: str):
         if not os.path.exists(pt_path):
             raise FileNotFoundError(
                 f"Classifier not found: {pt_path}. Train it first: "
-                f"`python -m train.train_state`."
+                f"`python -m train.train_state` (MLP) or "
+                f"`python -m train.train_sequence` (GRU)."
             )
         ckpt = torch.load(pt_path, map_location="cpu")
         sd = ckpt["state_dict"]
         self.states = ckpt.get("states", STATES)
         # feature list comes from the checkpoint, not the current FEATURES
         # constant, so older checkpoints (fewer features) still load; any
-        # checkpoint feature the live cascade doesn't compute (e.g. the
-        # rolling temporal features, not yet wired into the live pipeline)
-        # falls back to NaN -> neutralised to the training mean below.
+        # checkpoint feature the live cascade doesn't compute falls back to
+        # NaN -> neutralised to the training mean below.
         self.features = ckpt.get("features", FEATURES)
         self.mean = sd["mean"]
         self.std = sd["std"]
-        self.model = StateMLP(len(self.features), len(self.states), self.mean, self.std)
+        self.is_sequence = "hidden" in ckpt and "layers" in ckpt
+        if self.is_sequence:
+            if ckpt.get("gated_three"):
+                from .train_sequence import GatedThreeGRU
+                self.model = GatedThreeGRU(self.features, ckpt["fatigue_features"],
+                                          ckpt["distract_features"], self.mean, self.std,
+                                          hidden=ckpt["hidden"], layers=ckpt["layers"])
+            elif ckpt.get("gated_fatigue"):
+                from .train_sequence import GatedFatigueGRU
+                self.model = GatedFatigueGRU(self.features, ckpt["fatigue_features"],
+                                            self.mean, self.std,
+                                            hidden=ckpt["hidden"], layers=ckpt["layers"])
+            else:
+                from .train_sequence import SequenceGRU
+                self.model = SequenceGRU(len(self.features), len(self.states), self.mean, self.std,
+                                         hidden=ckpt["hidden"], layers=ckpt["layers"])
+            self._h = None   # GRU hidden state, carried across frames (a plain tensor for
+                             # SequenceGRU, a (h_main, h_fat) tuple for GatedFatigueGRU, a
+                             # (h_foc, h_dis, h_fat) tuple for GatedThreeGRU — probs() below
+                             # just stores/replays whatever the model returns)
+            # the GRU's recurrence has no notion of wall-clock time — it just
+            # applies one update per call. Training only ever calls it once
+            # every `extraction_stride` native frames (extract_features.py
+            # skips the rest entirely, not just downsamples). Advancing it on
+            # every native frame at inference runs the recurrence at
+            # `extraction_stride`x the trained rate, distorting its learned
+            # integration/decay timescale — feed it at the same stride here.
+            self.gru_stride = ckpt.get("extraction_stride", 2)
+            self._last_p = np.zeros(len(self.states))   # held prediction between stride steps
+        else:
+            self.model = StateMLP(len(self.features), len(self.states), self.mean, self.std)
         self.model.load_state_dict(sd)
         self.model.eval()
 
-    def probs(self, feat) -> np.ndarray:
+    def probs(self, feat, frame_idx: int = 0) -> np.ndarray:
+        """`frame_idx` is the absolute native-video frame number — needed so a
+        GRU checkpoint only advances its hidden state every `gru_stride`
+        frames (matching training), holding its last prediction in between.
+        Kept as an explicit parameter (not an internal counter) so an
+        `EnsembleClassifier` of several members stays correctly in sync with
+        the same absolute frame position, regardless of how many frames any
+        one member has actually advanced on."""
+        if self.is_sequence and frame_idx % self.gru_stride != 0:
+            return self._last_p   # this frame was never seen in training either
         vals = [getattr(feat, c, float("nan")) for c in self.features]
+        if self.is_sequence:
+            x = torch.tensor([[vals]], dtype=torch.float32)   # (batch=1, seq=1, features)
+            x = torch.where(torch.isnan(x), self.mean, x)
+            with torch.no_grad():
+                logits, self._h = self.model(x, self._h)
+                p = torch.softmax(logits[0, 0], dim=0).numpy()
+            self._last_p = p
+            return p
         x = torch.tensor([vals], dtype=torch.float32)
         # neutralise any missing feature (e.g. gaze dropped this frame, or a
         # checkpoint feature the live cascade doesn't compute yet)
@@ -90,6 +149,28 @@ class StateClassifier:
         with torch.no_grad():
             p = torch.softmax(self.model(x), dim=1)[0].numpy()
         return p
+
+
+class EnsembleClassifier:
+    """Averages the softmax probabilities of several independently-trained
+    `StateClassifier`s on every frame — the same mechanism validated offline
+    (see docs/METHODOLOGY.md — the ensemble experiment): no new training, no
+    shared state between members, just a per-frame average of each member's
+    own opinion. Each member keeps its own GRU hidden state and its own
+    stride-hold logic internally (via `StateClassifier.probs`); this class
+    only combines their outputs.
+    """
+    def __init__(self, pt_paths: list):
+        self.members = [StateClassifier(p) for p in pt_paths]
+        self.states = self.members[0].states
+        for p, m in zip(pt_paths[1:], self.members[1:]):
+            if m.states != self.states:
+                raise SystemExit(f"ensemble members must share the same class order — "
+                                 f"{pt_paths[0]} has {self.states}, {p} has {m.states}")
+
+    def probs(self, feat, frame_idx: int = 0) -> np.ndarray:
+        ps = [m.probs(feat, frame_idx) for m in self.members]
+        return np.mean(ps, axis=0)
 
 
 def _panel(frame, x, y, w, h, alpha=0.55):
@@ -164,7 +245,12 @@ def main():
     ap = argparse.ArgumentParser(description="Live driver-state demo (camera -> state).")
     ap.add_argument("--source", default="0", help="camera index or video path")
     ap.add_argument("--config", default=None)
-    ap.add_argument("--classifier", default="models/state_classifier/state_mlp.pt")
+    ap.add_argument("--classifier", nargs="+",
+                    default=["models/gru_gated/state_gru.pt", "models/gru_single/state_gru.pt"],
+                    help="one checkpoint path, or several for an ensemble (averages their "
+                         "softmax probabilities every frame — see docs/METHODOLOGY.md's "
+                         "ensemble experiment). All must share the same class order. Defaults "
+                         "to the best result in the project (macro-F1 0.810, see models/README.md).")
     ap.add_argument("--smooth", type=int, default=15, help="temporal smoothing window (frames)")
     ap.add_argument("--mirror", action="store_true", help="driver-view (flip display)")
     ap.add_argument("--save", default=None, help="write the annotated video to this path (.mp4)")
@@ -176,8 +262,9 @@ def main():
     cfg = load_config(args.config)
     print("loading cascade + classifier …")
     pipeline = build_pipeline(cfg.get("cascade", {}))
-    clf = StateClassifier(args.classifier)
-    print(f"classifier states: {clf.states}")
+    clf = EnsembleClassifier(args.classifier) if len(args.classifier) > 1 else StateClassifier(args.classifier[0])
+    print(f"classifier states: {clf.states}"
+         + (f"  (ensemble of {len(args.classifier)}: {args.classifier})" if len(args.classifier) > 1 else ""))
 
     cap, is_cam = open_source(args.source)
     if not cap.isOpened():
@@ -203,6 +290,8 @@ def main():
     frame_idx = 0
     t_last = time.time()
     fps_disp = 0.0
+    p = np.zeros(len(clf.states))
+    state, conf = "NO_FACE", 0.0
     print("running — press Esc or q to quit.")
     try:
         while True:
@@ -214,7 +303,11 @@ def main():
             feat = pipeline.process_frame(frame, frame_idx, ts)
 
             if feat.has_face:
-                p = clf.probs(feat)
+                # each classifier (or ensemble member) internally decides
+                # whether to advance its GRU on this frame or hold its last
+                # prediction, based on its own trained stride — see
+                # StateClassifier.probs()
+                p = clf.probs(feat, frame_idx)
                 prob_hist.append(p)
                 avg = np.mean(prob_hist, axis=0)
                 idx = int(avg.argmax())

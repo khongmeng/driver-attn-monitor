@@ -1,169 +1,168 @@
 # Driver Monitoring System
 
-Real-time driver state detection on Jetson Orin Nano Super + ArduCam IMX477.
+Real-time driver state detection from a single in-cabin RGB camera.
 
 Research project — University of St. Thomas.
 Conducted by Khongmeng Kormoua, supervised by Dr. Cheol-Hong Min.
 
-## Detected states
+> **New to this repo?** Read this page top to bottom once, then jump to
+> whichever quick-start section matches the machine in front of you.
 
-| State | Condition |
+## What this project does
+
+Classifies the driver into one of four states, plus a no-driver fallback:
+
+| State | Meaning |
 |---|---|
-| **FOCUSED** | Eyes open, head facing road |
-| **DROWSY** | PERCLOS ≥ 20% (eyes closed > 20% of last 60 s) |
-| **DISTRACTED** | Head yaw > 30° or pitch > 20° |
-| **TIRED** | Early fatigue (yawning, low vigilance) |
-| **NO_FACE** | Driver not detected |
+| **FOCUSED** | Eyes open, looking at the road |
+| **DISTRACTED** | Head turned away / not looking at the road |
+| **DROWSY** | Eyes closed for a large fraction of the last ~15–60s (PERCLOS) |
+| **TIRED** | Early fatigue signs — yawning, low vigilance |
+| **NO_FACE** | Driver not detected (fallback, not a driver state) |
 
-## Project layout
+**Target hardware:** NVIDIA Jetson Orin Nano Super + ArduCam IMX477 camera,
+real-time (TensorRT FP16). **Training hardware:** a PC with an NVIDIA GPU
+(developed on an RTX 4070 Ti Super).
+
+## Two runtimes — know which one you're looking at
+
+This repo currently has **two separate inference paths**, at different
+levels of maturity. Mixing them up is the single most confusing thing about
+this repo for a new reader, so read this part carefully:
+
+| | `inference/` (this repo's Jetson runtime today) | `train/run_live.py` (PC demo of the production target) |
+|---|---|---|
+| Runs on | Jetson (also runs on a PC for development) | PC only, for now |
+| How it decides state | Geometric heuristics (EAR threshold, `solvePnP` head pose) | Trained models (see `models/README.md`) — the actual cascade + classifier this project's results are about |
+| States it produces | FOCUSED / DROWSY / DISTRACTED / NO_FACE (TIRED reserved, not implemented) | All 5, including TIRED |
+| Status | Working prototype, cross-platform baseline | Where the real accuracy numbers come from — **not yet ported to the Jetson** |
+
+**In short:** if you're trying to reproduce this project's *results*
+(the numbers in `docs/METHODOLOGY.md`), you want `train/`. If you're trying
+to see *something* run live on the Jetson today, you want `inference/`.
+Porting `train/run_live.py`'s cascade + classifier onto the Jetson (ONNX
+Runtime + TensorRT) is the next major piece of work — see
+`docs/METHODOLOGY.md` for where that stands.
+
+## Repo layout
 
 ```
-inference/      Jetson runtime (camera + face analysis + state + overlay)
-tools/          Operator utilities (recorder + USB camera preview)
-train/          PC training scripts (RTX 4070 Ti Super)
-models/         Local model weights (gitignored — download or export separately)
-recordings/     Captured session videos (gitignored)
-docs/           Dev log, reference links, recording guide, manual
+inference/      [Jetson] today's live runtime — camera, heuristic face
+                 analysis, state detector, on-screen overlay
+tools/          [Jetson] operator utilities — data-collection recorder GUI,
+                 camera preview
+train/          [PC] everything about training: the feature-extraction
+                 cascade, the 10-architecture classifier comparison,
+                 the PC-side demo of the full trained pipeline
+                 (see train/README.md — start there for training work)
+models/         Trained model weights (see models/README.md for what's
+                 in here and which one to use)
+docs/           Paper-facing docs — full methodology/results
+                 (docs/METHODOLOGY.md), embedded-hardware related work
+                 (docs/related_work_embedded.md), data-collection runbook
+                 (docs/recording_guide.md)
+recordings/     Captured session videos (gitignored — created by the
+                 recorder tool)
+datasets/       Training datasets, e.g. DMD (gitignored — see
+                 train/README.md for how to get it)
 hardware/       Hardware notes and setup photos
 ```
 
-> Old `archive/` exploration scripts, `assets/` test videos, and `imgs/` were
-> removed in cleanup. The DeepStream production pipeline is still future work.
+## Quick start — [Jetson] run the live prototype
 
----
+**Prerequisites:** JetPack 6, miniforge3, system OpenCV with GStreamer
+support.
 
-## Inference setup (Jetson Orin Nano Super)
-
-**Prerequisites:** JetPack 6, miniforge3, system OpenCV with GStreamer support.
-
-### 1. Create the conda environment
-
-```bash
-source ~/miniforge3/bin/activate
-conda env create -f inference/environment.yml
-conda activate dms-infer
-```
-
-### 2. Link system OpenCV into the conda env
-
-OpenCV must come from the system (built with GStreamer + Argus support) — do not pip-install it.
-
-```bash
-SITE=$(python -c "import site; print(site.getpackages()[0])")
-ln -s /usr/lib/python3/dist-packages/cv2 $SITE/cv2
-```
-
-### 3. Run inference
-
-```bash
-conda activate dms-infer
-python run_inference.py
-
-# Quit: press Esc
-```
-
-### 4. (Optional) Launch the data-collection recorder
-
-Three ways to open the app, pick whichever fits:
-
-**A. From the repo folder** — in GNOME Files (Nautilus), right-click
-   `Start-Recorder.sh` → **Run as a Program**. (GNOME 42+ blocks
-   double-clicking executable scripts by default; the right-click menu
-   bypasses that.)
-
-**B. Put an icon on the Desktop** for one-click access from anywhere:
+1. **Create the conda environment**
    ```bash
-   ./tools/install_launcher.sh
-   ```
-   Double-click the new **DMS Recorder** icon on your Desktop.
-
-**C. From a terminal**:
-   ```bash
-   ./Start-Recorder.sh        # or ./tools/start_recording.sh
+   source ~/miniforge3/bin/activate
+   conda env create -f inference/environment.yml
+   conda activate dms-infer
    ```
 
-See `docs/recording_guide.md` for the session runbook.
+2. **Link system OpenCV into the conda env** — OpenCV must come from the
+   system build (GStreamer + Argus support). Do **not** `pip install
+   opencv-python` here.
+   ```bash
+   SITE=$(python -c "import site; print(site.getpackages()[0])")
+   ln -s /usr/lib/python3/dist-packages/cv2 $SITE/cv2
+   ```
 
-> See `docs/log.txt` for full setup history and troubleshooting.
+3. **Run it**
+   ```bash
+   conda activate dms-infer
+   python run_inference.py
+   # Quit: press Esc
+   ```
 
----
+If a camera window opens and you see a state label (FOCUSED/DROWSY/etc.)
+update as you move, it's working. Troubleshooting history:
+`docs/log.txt`.
 
-## Record a clip and run inference on it
+## Quick start — [Jetson] collect a training clip
 
-End-to-end workflow: capture a driver-facing clip, then run the analysis stack
-(gaze, head pose, blink rate, and phone/object detection) on the saved file and
-review an annotated video.
+1. Launch the recorder — three ways, pick whichever's convenient:
+   - **From Nautilus:** right-click `Start-Recorder.sh` → **Run as a
+     Program** (GNOME 42+ blocks double-click-to-run by default).
+   - **Desktop icon:** `./tools/install_launcher.sh` once, then double-click
+     the new **DMS Recorder** icon.
+   - **From a terminal:** `./Start-Recorder.sh`
+2. Record, then stop. The clip lands in `recordings/<name>.mp4`.
+3. See `docs/recording_guide.md` for the full lab-session runbook
+   (pairing with the Assetto Corsa driving simulator, session naming, etc.)
 
-### 1. Record a clip
+## Quick start — [Jetson] review a recorded clip offline
 
-Launch the recorder (see options A–C above), capture your session, and stop.
-Clips are saved to `recordings/`.
+Runs the same analysis stack as the live prototype, but on a saved file, and
+writes an annotated copy back out.
 
-```bash
-./Start-Recorder.sh
-# ...record, then stop. Output lands in recordings/<name>.mp4
-```
+1. **One-time:** fetch the phone/object-detector weights (gitignored):
+   ```bash
+   mkdir -p models
+   curl -sL -o models/efficientdet_lite0.tflite \
+     https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite
+   ```
+2. **Run it:**
+   ```bash
+   conda activate dms-infer
+   python -m inference.run_video recordings/<name>.mp4
+   ```
+   Writes `recordings/<name>_annotated.mp4` and prints a summary
+   (face-detection coverage, blink count, phone-visible %, yaw/pitch range,
+   state breakdown).
 
-### 2. Download the object-detection model (one time only)
+   | Flag | Effect |
+   |---|---|
+   | `--show` | Also open a live preview window while processing |
+   | `--no-save` | Skip the output file, just print the summary |
+   | `0` instead of a path | Run on the live camera instead of a file |
 
-The phone/object detector uses EfficientDet-Lite (80 COCO classes). The weights
-are gitignored, so fetch them once into `models/`:
+> Run as a module (`python -m inference.run_video`), not
+> `python inference/run_video.py` — it uses relative imports. Expect
+> ~6–7 fps on the Jetson CPU (this offline path uses MediaPipe, not the
+> TensorRT cascade).
 
-```bash
-mkdir -p models
-curl -sL -o models/efficientdet_lite0.tflite \
-  https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite
-```
+## Quick start — [PC] train / reproduce the results
 
-### 3. Run inference on the saved video
+**Prerequisites:** miniforge3 or Anaconda, an NVIDIA GPU + driver.
 
-```bash
-conda activate dms-infer
-python -m inference.run_video recordings/<name>.mp4
-```
-
-This writes an annotated copy to `recordings/<name>_annotated.mp4` and prints a
-summary (face-detection coverage, blink count, phone-visible %, yaw/pitch range,
-state breakdown).
-
-**Options:**
-
-| Flag | Effect |
-|---|---|
-| `--show` | Also open a live preview window while processing |
-| `--no-save` | Skip the output file, just print the summary |
-| *(camera index)* | Pass `0` instead of a path to run on the live camera: `python -m inference.run_video 0 --show` |
-
-> Run it as a module (`python -m inference.run_video`), not `python inference/run_video.py` — the package uses relative imports.
->
-> Expect ~6–7 fps on the Orin Nano CPU (MediaPipe FaceMesh + EfficientDet). This
-> offline pass is for reviewing a recorded view; real-time live capture needs the
-> ONNX/TRT cascade (see `CLAUDE.md`).
-
----
-
-## Training setup (Windows PC, RTX 4070 Ti Super)
-
-**Prerequisites:** miniforge3 or Anaconda, NVIDIA driver ≥ 591.86.
-
-### 1. Create the conda environment
-
-```bash
-conda env create -f train/environment.yml
-conda activate dms-train
-```
-
-### 2. Verify GPU is available
-
-```bash
-python -c "import torch; print(torch.cuda.get_device_name(0))"
-```
-
----
+1. **Create the conda environment**
+   ```bash
+   conda env create -f train/environment.yml
+   conda activate dms-train
+   ```
+2. **Verify the GPU is visible**
+   ```bash
+   python -c "import torch; print(torch.cuda.get_device_name(0))"
+   ```
+3. Continue with **`train/README.md`** — the full pipeline walkthrough
+   (get the dataset, fetch cascade weights, extract features, train a
+   classifier) lives there, not here.
 
 ## Config
 
-All tunable parameters live in `config.yaml` — no need to edit source files.
+All tunable parameters live in `config.yaml` — no need to edit source
+files for a threshold/resolution change.
 
 | Section | Key parameters |
 |---|---|
@@ -173,6 +172,16 @@ All tunable parameters live in `config.yaml` — no need to edit source files.
 | `head_pose` | yaw_threshold (30°), pitch_threshold (20°) |
 | `state` | perclos_window_sec (60), drowsy_perclos (0.20) |
 | `object_detector` | model_path, score_threshold (0.35), max_results (5) |
+| `cascade` | the `train/` pipeline's cascade settings — see `train/README.md` |
 | `display` | window_title, show_fps |
 
-> Note: `TIRED` is reserved in the state enum but detection (yawning / low vigilance) is not yet implemented. The current pipeline labels FOCUSED / DROWSY / DISTRACTED / NO_FACE.
+## Where to go next
+
+| I want to... | Go to |
+|---|---|
+| Understand the full methodology, every experiment, and the results | `docs/METHODOLOGY.md` |
+| See the embedded-hardware / related-work research | `docs/related_work_embedded.md` |
+| Train or reproduce a classifier | `train/README.md` |
+| Understand what's in `models/` and which checkpoint to use | `models/README.md` |
+| Run a data-collection session | `docs/recording_guide.md` |
+| See setup history / troubleshooting notes | `docs/log.txt` |

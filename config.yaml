@@ -64,7 +64,58 @@ cascade:
     model_xml: models/gaze/gaze-estimation-adas-0002.xml
     eye_box_frac: 0.25          # eye crop half-size as fraction of inter-ocular dist
 
-  temporal:                     # PERCLOS / blink (driven by the eye model)
+  mouth:                        # mouth landmarks -> Mouth Aspect Ratio -> yawn
+    enabled: true               # InsightFace 2d106det (106-pt landmarks); no
+                                # pretrained mouth-state ONNX model exists (§8.7)
+    onnx_path: models/landmark/2d106det.onnx
+    open_thresh: 0.5            # MAR above this = mouth open. §8.7 tested tuning this to
+                                # 0.64 (best frame-level accuracy against gt_yawn, 91.0%
+                                # vs 89.1%) but found it tanks yawn-EVENT recall (44 vs
+                                # GT 76 sustained yawns, was 87 vs GT 76 at 0.5) — same
+                                # mistake shape as blink_min_frames=2. Reverted to 0.5;
+                                # frame-level "best threshold" isn't the same as best for
+                                # the event-level signal the classifier actually needs.
+
+  temporal:                     # PERCLOS / blink / yawn (driven by the eye + mouth models)
     eye_closed_thresh: 0.5      # eye_open_prob below this = closed
-    blink_min_frames: 1         # consecutive closed frames to count a blink
+    blink_min_frames: 1         # consecutive closed frames to count a blink. §6.1 found
+                                # -85%/+41% per-session over/under-counting and hypothesized
+                                # a single noisy dip was the cause; §8.7 tested
+                                # blink_min_frames=2 and found it makes the aggregate WORSE
+                                # (0.61x vs 1.01x, systematic undercount — real blinks are
+                                # often only 1-2 samples wide at this stride-2 rate).
+                                # Reverted to 1; the per-session variance is a real
+                                # unresolved limitation, not fixed by this debounce.
     perclos_window_sec: 60
+    yawn_min_duration_sec: 1.0  # continuous mouth-open duration to count as a yawn
+
+# --- PC-side RAW-PIXEL end-to-end pipeline (train/rawpixel/) ------------------
+# A separate, self-contained experiment line (docs/METHODOLOGY.md §14): face
+# crop -> frozen pretrained 2D-CNN embedding -> GRU, no hand-engineered
+# features. Kept isolated from `cascade:` above on purpose (own code, own
+# output/model dirs) so the two approaches can be compared without either
+# depending on the other. Only the face detector and DMD dataset/annotation
+# readers are shared (utilities, not features/results).
+rawpixel:
+  use_gpu: true
+  stride: 2                     # match cascade's extraction stride for a fair comparison
+
+  face:                         # SCRFD, crop coordinates only — no cascade feature reuse
+    model_pack: buffalo_sc
+    det_size: 640
+    det_thresh: 0.5
+
+  crop:
+    size: 112                   # face-recognition-standard crop resolution
+    margin: 0.25                # expand SCRFD box this fraction before crop
+
+  backbone:
+    name: resnet18              # torchvision, ImageNet-pretrained, frozen (not fine-tuned —
+                                # see docs/METHODOLOGY.md §14 for why)
+    embed_dim: 512
+
+  gru:
+    proj_dim: 128                # trainable linear bottleneck before the GRU (the only
+                                 # part of the "vision" side that trains)
+    hidden: 64
+    layers: 2

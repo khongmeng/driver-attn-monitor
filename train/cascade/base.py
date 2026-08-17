@@ -113,6 +113,12 @@ class FrameFeatures:
     blink: int = 0                    # blink completed on this frame
     blink_count: int = 0              # cumulative
     blink_rate: float = float("nan")  # blinks/minute
+    # stage — mouth (MAR / yawn)
+    mar: float = float("nan")         # mouth aspect ratio (opening / width)
+    mouth_open: int = 0               # 0/1 thresholded
+    yawn_active: int = 0              # sustained mouth-open run has crossed the min duration
+    yawn_count: int = 0               # cumulative
+    yawn_rate: float = float("nan")   # yawns/minute
 
     def to_dict(self) -> dict:
         return asdict(self)

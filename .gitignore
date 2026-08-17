@@ -18,7 +18,10 @@ env/
 .DS_Store
 Thumbs.db
 
-# Model weights — keep models/ structure but ignore binaries
+# Model weights — keep models/ structure but ignore binaries by default.
+# Exception: the deployed ensemble (gru_gated/ + gru_single/) IS committed —
+# so a fresh clone (e.g. on the Jetson) can run the best model without
+# retraining. See models/README.md.
 models/**/*.onnx
 models/**/*.engine
 models/**/*.trt
@@ -29,6 +32,8 @@ models/**/*.etlt
 models/**/*.uff
 models/**/*.bin
 models/**/*.xml
+!models/gru_gated/**
+!models/gru_single/**
 
 # DeepStream artifacts
 *.engine

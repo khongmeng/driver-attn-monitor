@@ -4,6 +4,10 @@
   * 6DRepNet (stage ②) -> auto-downloads via the `sixdrepnet` package on first run
   * eye-state (stage ③) -> fetched here: OpenVINO OMZ `open-closed-eye-0001`,
                            served directly as ONNX (32x32, 2-class).
+  * mouth landmarks (yawn) -> fetched here: InsightFace `2d106det` (106-point
+                           2D landmarks), from the `buffalo_s` pack — no
+                           pretrained mouth-open/closed model exists like
+                           open-closed-eye-0001 does for eyes (see §8.7).
 
 Run once:
     python -m train.download_models
@@ -11,6 +15,7 @@ Run once:
 from __future__ import annotations
 
 import os
+import shutil
 import ssl
 import urllib.request
 
@@ -70,6 +75,23 @@ def _inspect(onnx_path: str):
     print(f"  output {o.name} {o.shape}")
 
 
+LANDMARK_DST = os.path.join("models", "landmark", "2d106det.onnx")
+
+
+def _fetch_landmark():
+    print("\nMouth-landmark model (2d106det, InsightFace buffalo_s pack):")
+    if os.path.exists(LANDMARK_DST) and os.path.getsize(LANDMARK_DST) > 0:
+        print(f"  already present: {LANDMARK_DST} ({os.path.getsize(LANDMARK_DST)} bytes)")
+        return
+    from insightface.utils import storage
+    pack_dir = storage.download("models", "buffalo_s")   # ~/.insightface/models/buffalo_s
+    src = os.path.join(pack_dir, "2d106det.onnx")
+    os.makedirs(os.path.dirname(LANDMARK_DST), exist_ok=True)
+    shutil.copy(src, LANDMARK_DST)
+    print(f"  copied {src} -> {LANDMARK_DST}")
+    _inspect(LANDMARK_DST)
+
+
 def main():
     print("Eye-state model (open-closed-eye-0001):")
     _download(EYE_URL, EYE_DST)
@@ -77,6 +99,7 @@ def main():
     print("\nEye-gaze model (gaze-estimation-adas-0002, OpenVINO IR):")
     for ext in ("xml", "bin"):
         _download(GAZE_BASE + ext, os.path.join(GAZE_DIR, f"gaze-estimation-adas-0002.{ext}"))
+    _fetch_landmark()
     print("\nSCRFD + 6DRepNet auto-download on first pipeline run — nothing to do.")
     print("Done.")
 
