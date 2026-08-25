@@ -2715,3 +2715,114 @@ including `--windowed-eval`). Checkpoints:
 curves + solo-vs-ensemble summary, `train/output/plot_cv_ensemble.py`):
 `train/output/plots/cv_attempt{1_k5,2_k3,3_k3_winEval}.png` and
 `cv_attempts_summary.png`.
+
+## 17. On-device embedded benchmarks (Jetson Orin Nano Super)
+
+Measured **2026-08-24 on the target hardware** — the previously-unmeasured
+half of the paper (paper.tex §VII was all TODO). Fills `tab:embedded` +
+`tab:embedded_sys` and the new latency column of `tab:comparison`.
+
+**Setup.** Jetson Orin Nano Super, **MAXN_SUPER** power mode (`sudo nvpmodel
+-m 2 && sudo jetson_clocks`), JetPack 6.2 / L4T r36.4, CUDA 12.6, TensorRT
+10.3. The PC-side `train/` cascade + classifier were ported to the Jetson for
+the first time — env in `~/dms-jetson-venv` (virtualenv, `--system-site-
+packages` for system cv2+tensorrt; torch 2.8.0 + onnxruntime-gpu 1.23.0 from
+the `jetson-ai-lab.io/jp6/cu126` wheel index; insightface/sixdrepnet/openvino
+from pypi). Install gotchas recorded in the memory note `jetson_port_env`;
+the load-bearing ones: torch must come from the Jetson index only (pypi
+silently gives a `+cpu` build), and plain `onnxruntime` must not be installed
+after `onnxruntime-gpu` (it clobbers the CUDA/TensorRT providers).
+
+### 17.1 Per-stage latency (TensorRT FP16)
+
+Each stage exported to ONNX and built as a TRT FP16 engine with `trtexec`
+(`--fp16 --memPoolSize=workspace:2048` — the 2 GB cap avoids CUDA-OOM during
+tactic search on the 7.4 GB shared pool), median GPU compute time:
+
+| Stage | Model | ONNX source | TRT FP16 (ms) |
+|---|---|---|---|
+| ① face | SCRFD-500M | insightface `det_500m.onnx`, 640×640 | 1.73 |
+| ② head pose | 6DRepNet | torch→ONNX export (RepVGG, 224×224) | 2.23 |
+| ③ eye state | open-closed-eye-0001 | `open_closed_eye.onnx`, 32×32 (×2 eyes) | 0.043 |
+| ⑤ gaze | gaze-estimation-adas-0002 | **PINTO_model_zoo 091** ONNX (IR has no ONNX) | 0.40 |
+| mouth | 2d106det | `2d106det.onnx`, 192×192 | 0.52 |
+| ④ classifier | GRU | `gru_single/state_gru.onnx` | 0.023 |
+| **sum** | | | **≈5.0 → ~200 fps** |
+
+- The gaze model ships only as OpenVINO IR (no Jetson-GPU OpenVINO plugin, and
+  IR→ONNX isn't natively supported). Used the PINTO_model_zoo #091 converted
+  ONNX, **verified vs the IR**: max-abs-diff **0.0016** on the gaze vector
+  (same input). On CPU/OpenVINO the same model is 2.41 ms — TRT FP16 is ~6×.
+- `trtexec` CoV was high (25–60%) on some stages due to background load /
+  shared-memory contention; medians are stable and used.
+
+### 17.2 End-to-end (reference ORT-CUDA implementation)
+
+Real integrated run over a held-out DMD session (`gA_1_s1`, 1280×720, 2000
+frames, 100% face). Cascade via onnxruntime **CUDA** EP + 6DRepNet on
+torch-CUDA + gaze on **OpenVINO CPU** + GRU ensemble on CPU (the classifiers
+are not TRT-exported — this is their real current runtime):
+
+- **9.9 fps** incl. video decode (100.6 ms/frame); **11.5 fps** compute-only
+  (86.9 ms/frame).
+- Per-stage *integrated* mean (ORT-CUDA, incl. pre/post-proc): **6DRepNet
+  47.6 ms**, **SCRFD 22.9 ms**, mouth 6.8, gaze 5.1, eye 2.5, clf 1.8. The
+  two backbones are ~20× their isolated TRT engine → the gap to the ~200 fps
+  compute bound is unrealized TRT, not model cost.
+- **Harness gotcha:** preloading 2000×720p frames = ~5.5 GB host RAM starved
+  the shared pool and crashed SCRFD's cuBLAS alloc (`CUBLAS_STATUS_ALLOC_
+  FAILED`). Fixed by streaming frames one at a time (decode timed separately).
+
+### 17.3 Power + memory (tegrastats @ MAXN)
+
+Sampled every 200 ms during 17.2 (1047 samples):
+
+- **VDD_IN (total board): mean 9.5 W, peak 10.4 W.** (CPU_GPU_CV 3.6 W,
+  SOC 2.1 W.) GPU only ~47% utilized — the path is torch/ORT-bound, not
+  GPU-bound. Only MAXN measured (deliberate: a vehicle-powered board isn't
+  power-constrained, so latency/memory are the real budget).
+- **Peak RAM: 4083 MB of 7620 MB (~54%)**, mean 3980 MB; modest swap (~1.3 GB).
+
+### 17.4 Per-model stage-④ classifier latency (all 10 architectures)
+
+Each architecture reconstructed from `train/` code (param counts match the
+paper table, e.g. MLP 3,075≈3,101, TCN 139,523, GRU-single 40,323, gated
+44,227, ensemble 84,550, ResNet18+GRU 11.30M, R3D-18 33.17M) — latency is a
+function of architecture+input shape, not trained weights, so no checkpoint or
+data is needed. Neural = PyTorch **CUDA-event** timing (their actual runtime),
+classical = sklearn **CPU** on synthetic data (indicative). Script:
+`scratchpad/models_bench.py`.
+
+| model | input (per prediction) | latency | runtime |
+|---|---|---|---|
+| SVM (RBF) | (1,13) | 0.70 ms | CPU |
+| Random Forest (300 trees) | (1,13) | ~88 ms | CPU (synthetic — indicative) |
+| Gradient Boosted Trees | (1,13) | 1.84 ms | CPU |
+| MLP | (1,13) | 0.51 ms† | torch-CUDA |
+| TCN | (1,256,13) window | 4.59 ms | torch-CUDA |
+| GRU (single) | (1,1,13) | 0.60 ms† | torch-CUDA |
+| Gated-Fatigue GRU | (1,1,13) | 1.17 ms | torch-CUDA |
+| Ensemble (both GRUs) | 2×(1,1,13) | 1.77 ms | torch-CUDA |
+| ResNet18+GRU (raw px) | (1,1,112,112,3) | 8.54 ms/frame | torch-CUDA |
+| R3D-18 (raw px) | (1,16,112,112,3) | 293.6 ms/clip (~18.4/frame) | torch-CUDA |
+
+- †: feature heads are **torch kernel-launch-overhead bound** (~0.5 ms floor),
+  not compute — cf. the GRU's 0.023 ms TRT engine (17.1). Params is the fairer
+  compute axis for these; the latency column matters most for the raw-pixel
+  CNNs where compute dominates.
+- R3D-18 needed `PYTORCH_NO_CUDA_MEMORY_CACHING=1` to dodge a Jetson conv3d
+  NVML assert in the caching allocator; it predicts once per 16-frame clip.
+- **Total on-device = shared cascade + classifier.** Hand-feature models add
+  0.5–4.6 ms on the ~5 ms TRT cascade (ensemble: ~7 ms total, ~140 fps
+  compute-bound); raw-pixel models skip the hand-feature cascade but cost
+  8.5–18 ms/frame for the CNN alone (R3D-18's 3D convs are catastrophic on
+  Orin Nano). The 0.810-F1 ensemble is ~10× cheaper than the lower-accuracy
+  raw-pixel models — on-device evidence for the accuracy-vs-compute thesis.
+
+### 17.5 Still open
+
+The cascade TRT engines exist (`scratchpad/engines/`) but are **not wired into
+the live Python pipeline** — SCRFD/6DRepNet still call ORT/torch, which is why
+the reference impl is ~10 fps vs the ~200 fps engine sum. Wiring them in (and
+exporting the classifier to TRT) is the remaining deployment step; it's an
+implementation task, no model changes.

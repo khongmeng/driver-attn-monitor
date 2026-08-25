@@ -37,7 +37,7 @@ cmin@stthomas.edu}
 
 \begin{abstract}
 % TODO(author): trim/adjust once happy with the numbers.
-Distracted and drowsy driving are still one of the biggest causes of crashes on the road today. A driver monitoring system (DMS) that can watch the driver continuously and warn them before something bad happens could help a lot with this problem. Many DMS designs on the market or in research use infrared cameras, depth sensors, or wearable biosensors to make the system more reliable in bad lighting, but all of these add cost and make the system harder to install in a normal vehicle. This paper looks at the opposite direction: build a driver state monitoring pipeline using only one regular RGB camera, and design it so it can eventually run on a small embedded computer, the NVIDIA Jetson Orin Nano Super. The pipeline uses a chain of pretrained models to get face location, head pose, eye state, gaze direction, and mouth shape from each frame, turns these into a 13-number feature vector, and then a temporal model decides the driver's state from the sequence of these numbers. Since we did not fine-tune any of the upstream models, the only thing we actually train is this last classifier, so the paper focuses on comparing ten different architectures for it, from classic machine learning (SVM, Random Forest, Gradient Boosted Trees) to recurrent and convolutional sequence models (GRU, Temporal Convolutional Network) to models trained directly on raw pixels (a fine-tuned ResNet18+GRU and a 3D-CNN). All ten are trained and tested on the same driver-independent split of the Driver Monitoring Dataset (DMD), so the comparison is fair. The best result comes from averaging two GRU models together (a gated dual-branch GRU and a plain single-branch GRU), giving a macro-F1 of 0.810 using only 84,609 parameters combined, which is much smaller than the raw-pixel models we also tested (up to 33.2 million parameters) even though it performs better. We also found that using raw pixels does not actually beat the best hand-engineered-feature models here, and that training one of the models longer actually made it slightly worse. On-device latency and power measurements on the actual Jetson hardware are the next step of this work and are not included yet.
+Distracted and drowsy driving are still one of the biggest causes of crashes on the road today. A driver monitoring system (DMS) that can watch the driver continuously and warn them before something bad happens could help a lot with this problem. Many DMS designs on the market or in research use infrared cameras, depth sensors, or wearable biosensors to make the system more reliable in bad lighting, but all of these add cost and make the system harder to install in a normal vehicle. This paper looks at the opposite direction: build a driver state monitoring pipeline using only one regular RGB camera, and design it so it can eventually run on a small embedded computer, the NVIDIA Jetson Orin Nano Super. The pipeline uses a chain of pretrained models to get face location, head pose, eye state, gaze direction, and mouth shape from each frame, turns these into a 13-number feature vector, and then a temporal model decides the driver's state from the sequence of these numbers. Since we did not fine-tune any of the upstream models, the only thing we actually train is this last classifier, so the paper focuses on comparing ten different architectures for it, from classic machine learning (SVM, Random Forest, Gradient Boosted Trees) to recurrent and convolutional sequence models (GRU, Temporal Convolutional Network) to models trained directly on raw pixels (a fine-tuned ResNet18+GRU and a 3D-CNN). All ten are trained and tested on the same driver-independent split of the Driver Monitoring Dataset (DMD), so the comparison is fair. The best result comes from averaging two GRU models together (a gated dual-branch GRU and a plain single-branch GRU), giving a macro-F1 of 0.810 using only 84,609 parameters combined, which is much smaller than the raw-pixel models we also tested (up to 33.2 million parameters) even though it performs better. We also found that using raw pixels does not actually beat the best hand-engineered-feature models here, and that training one of the models longer actually made it slightly worse. We further port the full pipeline to the Jetson Orin Nano Super and measure it directly: as TensorRT FP16 engines the cascade plus classifier runs in about 5\,ms per frame (roughly 200\,fps of compute) while drawing under 10\,W and using 4.1\,GB of memory, confirming that the design fits the embedded budget with large margin.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -158,22 +158,22 @@ Table~\ref{tab:comparison} shows all ten architectures side by side. The best si
 
 \begin{table}[htbp]
 \centering
-\caption{All ten architectures on the held-out driver split. Params is the trained classifier only, it does not include the pretrained cascade stages before it. The three classical ML models do not have a comparable parameter count, so they are marked N/A.}
+\caption{All ten architectures on the held-out driver split. Params is the trained classifier only, it does not include the pretrained cascade stages before it. The three classical ML models do not have a comparable parameter count, so they are marked N/A. Lat.\ is the measured per-frame stage-4 classifier latency on the Jetson Orin Nano Super at MAXN, and excludes the shared cascade front-end (that is reported separately in Section~\ref{sec:embedded}). Neural models are timed in PyTorch (CUDA), their present runtime; classical models ($\ddagger$) run in scikit-learn on the CPU, timed on representative inputs (their fitted models are not checkpointed), so the Random Forest figure in particular is indicative. $\dagger$: the tiny feature heads sit on a fixed ${\sim}0.5$\,ms PyTorch kernel-launch overhead, so their true compute is far smaller (0.02\,ms for the GRU under TensorRT) and parameter count is the fairer compute proxy for them. $\S$: R3D-18 emits one prediction per 16-frame clip (293\,ms/clip), so its figure is per-frame amortized.}
 \label{tab:comparison}
-\begin{tabular}{@{}lccc@{}}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
-\textbf{Architecture} & \textbf{Input} & \textbf{macro-F1} & \textbf{Params} \\
+\textbf{Architecture} & \textbf{Input} & \textbf{macro-F1} & \textbf{Params} & \textbf{Lat.\ (ms)} \\
 \midrule
-SVM (RBF) & features & 0.531 & N/A \\
-Random Forest & features & 0.599 & N/A \\
-Gradient Boosted Trees & features & 0.620 & N/A \\
-MLP (per-frame) & features & 0.599 & 3{,}101 \\
-TCN & features, seq. & 0.720 & 139{,}549 \\
-R3D-18 (3D-CNN) & raw pixels & 0.712 & 33{,}177{,}437 \\
-ResNet18+GRU (fine-tuned) & raw pixels & 0.742 & 11{,}314{,}205 \\
-GRU (single-branch) & features, seq. & 0.790 & 40{,}349 \\
-Gated-Fatigue GRU & features, seq. & 0.798 & 44{,}260 \\
-\textbf{Ensemble (both GRUs)} & features, seq. & \textbf{0.810} & \textbf{84{,}609} \\
+SVM (RBF) & features & 0.531 & N/A & 0.70$^\ddagger$ \\
+Random Forest & features & 0.599 & N/A & 88$^\ddagger$ \\
+Gradient Boosted Trees & features & 0.620 & N/A & 1.84$^\ddagger$ \\
+MLP (per-frame) & features & 0.599 & 3{,}101 & 0.51$^\dagger$ \\
+TCN & features, seq. & 0.720 & 139{,}549 & 4.59 \\
+R3D-18 (3D-CNN) & raw pixels & 0.712 & 33{,}177{,}437 & 18.4$^\S$ \\
+ResNet18+GRU (fine-tuned) & raw pixels & 0.742 & 11{,}314{,}205 & 8.54 \\
+GRU (single-branch) & features, seq. & 0.790 & 40{,}349 & 0.60$^\dagger$ \\
+Gated-Fatigue GRU & features, seq. & 0.798 & 44{,}260 & 1.17 \\
+\textbf{Ensemble (both GRUs)} & features, seq. & \textbf{0.810} & \textbf{84{,}609} & \textbf{1.77} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -212,28 +212,57 @@ Since we wanted a fair comparison, we trained every iterative architecture for a
 \section{Toward Embedded Deployment}
 \label{sec:embedded}
 
-% TODO(author): this section is currently just parameter counts and other
-% papers' published numbers. Fill in the placeholder table below once we
-% actually benchmark on the Jetson.
-
 Part of the reason we compared 10 different architectures instead of just picking the most accurate one is that an embedded board cannot simply run whatever gets the best number, it has to also fit inside a real-time latency and power budget. Table~\ref{tab:comparison} already tells us something useful here even without touching the Jetson: the classifier itself is a tiny part of the total compute, no matter which one we pick. Even the biggest raw-pixel model (33.2 million parameters) is small by the standards of embedded vision models, and the ensemble we are actually recommending (84,609 parameters combined) is far smaller still. The part of the pipeline that will actually decide whether this runs in real time is the cascade in Fig.~\ref{fig:pipeline}, stages ① through ⑤, since those run on every single frame no matter which classifier is used afterward.
 
 Two papers we cited earlier already give us a rough idea of what to expect. Scribano et al. \cite{b_scribano} report 1.73\,ms per frame (FP16) for their smallest model on a Jetson Xavier NX, and 16.5--23.7\,ms for their full pipeline depending on how often face detection runs. A separate paper targeting the Jetson Orin Nano directly \cite{b_multiregion} projects 13--20\,fps for a similar single-frame network. These numbers are useful as a rough reference, but they are for different network architectures running on different (and in one case weaker) hardware than what we are using, so they cannot really substitute for actually measuring our own pipeline.
 
-We have not measured our pipeline on the Jetson yet at the time of writing this paper. Table~\ref{tab:embedded_plan} lists what we plan to measure once the deployment is set up.
+We have now ported the full pipeline to the Jetson Orin Nano Super and measured it directly. Each of the five cascade stages, and the classifier, was built as a TensorRT FP16 engine and benchmarked at the uncapped MAXN power mode; Table~\ref{tab:embedded} reports the per-stage latency. In isolation the whole cascade plus classifier sums to about 5.0\,ms per frame, roughly 200\,frames per second of compute, and is dominated by the two backbone stages, SCRFD and 6DRepNet. The classifier itself is negligible, confirming on the actual hardware what the parameter counts already suggested.
+
+We also measured the pipeline end-to-end over a held-out DMD session (1280$\times$720, 2000 frames, all with a detected face). Our current reference implementation runs the cascade through ONNX Runtime's CUDA provider, with the gaze model on the CPU, rather than through the TensorRT engines, and sustains 11.5\,fps of compute (9.9\,fps including video decode). The gap between this and the ${\sim}200$\,fps compute bound is almost entirely because the two heaviest stages are not yet wired to their TensorRT engines: run through ONNX Runtime, 6DRepNet and SCRFD take 47.6\,ms and 22.9\,ms per frame, about 20$\times$ their standalone FP16 engine latency. Closing that gap is an implementation task, not a change to any model. Table~\ref{tab:embedded_sys} lists the system-level measurements. At MAXN the board draws only 9.5\,W on average (10.4\,W peak) and the pipeline peaks at 4.1\,GB of the 8\,GB shared memory pool, both well within budget. Since an in-vehicle system runs on vehicle power, the more relevant constraints are latency and memory, and the design meets both with large margin.
+
+Two caveats apply. The per-stage figures in Table~\ref{tab:embedded} are standalone engine latencies and do not include the pre- and post-processing between stages (face cropping, resizing, and the detector's anchor decoding and non-max suppression), so a fully optimized end-to-end rate would fall between our measured 11.5\,fps and the 200\,fps compute bound rather than at the bound. And the stage-4 classifiers in Table~\ref{tab:comparison} are timed in PyTorch, their present runtime: the very small feature-based heads sit on a fixed PyTorch kernel-launch overhead of about half a millisecond, so their true compute (0.02\,ms for the GRU under TensorRT) is well below what that column shows, which is why parameter count remains the fairer compute proxy for them.
+
+Fig.~\ref{fig:acclat} places all ten architectures on the axis that matters most for deployment, macro-F1 against measured per-frame latency, which is the on-device analog of the accuracy-versus-parameters view in Fig.~\ref{fig:accparams}. The hand-engineered-feature GRU family sits in the top-left corner, the best accuracy at the lowest latency, while both raw-pixel models sit lower and well to the right, and the classical baselines lower still. The model we recommend is thus not only the most accurate but also among the cheapest to run on the target board.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figure/accuracy_vs_latency.png}
+  \caption{macro-F1 against measured per-frame on-device latency (log scale) on the Jetson Orin Nano Super at MAXN, for all ten architectures. Latency is the stage-4 classifier only (neural models timed in PyTorch/CUDA, classical in scikit-learn on CPU); the shared cascade front-end is reported separately in Table~\ref{tab:embedded}. The hand-feature GRU family (top-left) reaches the highest accuracy at the lowest latency.}
+  \label{fig:acclat}
+\end{figure}
 
 \begin{table}[htbp]
 \centering
-\caption{Planned Jetson measurements (not done yet).}
-\label{tab:embedded_plan}
+\caption{Measured per-stage latency on the Jetson Orin Nano Super (MAXN, TensorRT FP16, median GPU compute time). Every stage runs once per frame, except eye state, which runs once per eye. The gaze model, distributed only as OpenVINO IR, was converted to ONNX for this measurement and verified against the original to within $1.6\times10^{-3}$ on the output vector.}
+\label{tab:embedded}
+\begin{tabular}{@{}clc@{}}
+\toprule
+\textbf{Stage} & \textbf{Model} & \textbf{TRT FP16 (ms)} \\
+\midrule
+1 & SCRFD-500M (face detect) & 1.73 \\
+2 & 6DRepNet (head pose) & 2.23 \\
+3 & open-closed-eye-0001 ($\times$2) & 0.04 \\
+5 & gaze-estimation-adas-0002 & 0.40 \\
+-- & 2d106det (mouth / yawn) & 0.52 \\
+4 & GRU ensemble (classifier) & 0.02 \\
+\midrule
+\multicolumn{2}{@{}l}{\textbf{Total per frame}} & \textbf{$\approx$5.0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Measured system-level performance on the Jetson Orin Nano Super at MAXN, over a held-out DMD session. The reference implementation runs the cascade in ONNX Runtime (CUDA) with the gaze model on the CPU; the compute bound is the sum of the TensorRT FP16 engines in Table~\ref{tab:embedded}.}
+\label{tab:embedded_sys}
 \begin{tabular}{@{}ll@{}}
 \toprule
-\textbf{Measurement} & \textbf{Status} \\
+\textbf{Measurement} & \textbf{Value} \\
 \midrule
-Per-stage latency (①--⑤, TensorRT FP16) & TODO \\
-End-to-end pipeline latency / fps & TODO \\
-Power draw at 7\,W / 15\,W / 25\,W / MAXN & TODO \\
-Peak memory use (8\,GB shared pool) & TODO \\
+End-to-end (reference impl.) & 11.5\,fps compute; 9.9\,fps incl.\ decode \\
+Compute bound (TRT engines) & ${\approx}5.0$\,ms/frame (${\approx}200$\,fps) \\
+Power (VDD\_IN, MAXN) & 9.5\,W mean / 10.4\,W peak \\
+Peak memory & 4.1\,GB of 8\,GB shared pool \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -243,9 +272,9 @@ Peak memory use (8\,GB shared pool) & TODO \\
 
 We built an RGB-only driver monitoring pipeline and compared ten different classifier architectures for the last stage of it, all trained and tested on the same driver-independent split of DMD. The best result was averaging two GRU models together, reaching a macro-F1 of 0.810 with only 84,609 parameters, which is much smaller than any of the raw-pixel models we tried and still performs better than all of them. Along the way we found two things we did not expect: raw pixels do not beat the best hand-feature sequence models here, even though one of the raw-pixel models does beat some of the simpler hand-feature baselines, and training the largest model in the comparison for longer actually made it slightly worse instead of better.
 
-This work still has real limitations. There are only 14 drivers in total, which our own results suggest is already the main thing limiting accuracy, more drivers would probably help more than a bigger model at this point. DMD's drowsy and fatigued behavior is acted by the drivers on request rather than happening naturally, which might not fully represent what real fatigue looks like. Merging DROWSY and TIRED into one FATIGUED class was necessary given how little data we had for each one separately, but it does throw away some of the detail we originally wanted. Finally, and probably most importantly, none of the accuracy numbers in this paper are paired with real latency or power numbers from the Jetson yet, we chose an RGB-only, low-parameter design specifically because we expect it to fit an embedded budget, but we have not actually confirmed that on the hardware yet.
+This work still has real limitations. There are only 14 drivers in total, which our own results suggest is already the main thing limiting accuracy, more drivers would probably help more than a bigger model at this point. DMD's drowsy and fatigued behavior is acted by the drivers on request rather than happening naturally, which might not fully represent what real fatigue looks like. Merging DROWSY and TIRED into one FATIGUED class was necessary given how little data we had for each one separately, but it does throw away some of the detail we originally wanted. On the deployment side, we have now confirmed on the actual Jetson hardware that the pipeline fits an embedded budget, running at about 5\,ms per frame of compute under 10\,W, but our current reference runtime only realizes part of that because the two heaviest cascade stages still run through ONNX Runtime rather than their TensorRT engines.
 
-The immediate next step is running this pipeline on the Jetson Orin Nano Super and measuring the numbers listed in Table~\ref{tab:embedded_plan}. After that, we would like to collect data from more drivers so we can revisit whether FATIGUED can be split back into DROWSY and TIRED the way we originally intended.
+The immediate next step is therefore wiring those cascade stages to their TensorRT FP16 engines in the live runtime, to turn the ${\sim}200$\,fps compute bound we measured stage-by-stage into a sustained end-to-end frame rate. After that, we would like to collect data from more drivers so we can revisit whether FATIGUED can be split back into DROWSY and TIRED the way we originally intended.
 
 \begin{thebibliography}{00}
 
